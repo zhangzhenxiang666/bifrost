@@ -202,7 +202,7 @@ mod tests {
         ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: "openai".to_string(),
+            endpoint: crate::config::Endpoint::Openai,
             adapter: vec![],
             headers: vec![],
             body: vec![],
@@ -276,7 +276,7 @@ mod tests {
         let provider_config = ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: "openai".to_string(),
+            endpoint: crate::config::Endpoint::Openai,
             adapter: vec![],
             headers: vec![],
             body: vec![],

@@ -918,3 +918,54 @@ pub struct AdapterContext<'a> {
 - [x] 可以获取 base_url, api_key, headers, body
 - [x] 编译通过 (`cargo check`)
 - [x] 测试通过 (`cargo test adapter`)
+
+## Task 11: OpenAIToQwen 适配器实现 (2026-03-01)
+
+### 关键学习点
+
+#### 1. Endpoint Enum 设计
+- 将 `endpoint` 字段从 `String` 改为 `Endpoint` enum
+- 提供类型安全的端点比较
+- 支持自动反序列化：`#[serde(rename_all = "lowercase")]`
+- 使用 `#[serde(other)]` 处理未知值，保证向后兼容
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Endpoint {
+    Openai,
+    Anthropic,
+    Qwen,
+    #[serde(other)]
+    Other,
+}
+```
+
+#### 2. OpenAIToQwenAdapter 实现要点
+- **目的**: 为 OpenAI 兼容的 Qwen API 添加特定 headers
+- **请求转换**:
+  - 对于流式请求，添加 `stream_options.include_usage: true`
+  - 添加 Qwen 特定 headers:
+    - `User-Agent: QwenCode/0.11.0 (linux; x64)`
+    - `X-DashScope-CacheControl: enable`
+    - `X-DashScope-AuthType: qwen-oauth`
+- **响应/流转换**: Passthrough（Qwen 返回 OpenAI 兼容格式）
+
+#### 3. Python 版本对比
+Python 的 `qwencode.py` 关键逻辑：
+- OAuth2 token 管理（Rust 版本暂未实现）
+- 流式请求添加 `stream_options`
+- 添加相同的 Qwen headers
+
+#### 4. 测试覆盖
+- 非流式请求转换
+- 流式请求添加 `stream_options`
+- 响应 passthrough
+- 流式块 passthrough
+
+### 技术决策
+
+1. **Endpoint 作为 Enum**: 提供类型安全，避免字符串比较错误
+2. **Passthrough 响应**: Qwen API 已返回 OpenAI 兼容格式，无需转换
+3. **Headers 优先**: 主要转换是添加 Qwen 特定的认证和缓存 headers
+

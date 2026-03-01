@@ -64,7 +64,7 @@ mod tests {
         let config = ProviderConfig {
             base_url: "https://api.example.com".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: "openai".to_string(),
+            endpoint: crate::config::Endpoint::Openai,
             adapter: vec![],
             headers: vec![],
             body: vec![],

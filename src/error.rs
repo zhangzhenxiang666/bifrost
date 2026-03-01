@@ -87,12 +87,7 @@ impl From<serde_json::Error> for LlmMapError {
     }
 }
 
-/// Convert serde_yaml::Error to LlmMapError
-impl From<serde_yaml::Error> for LlmMapError {
-    fn from(err: serde_yaml::Error) -> Self {
-        LlmMapError::Config(err.to_string())
-    }
-}
+
 
 /// Result type alias for LLM Map operations
 pub type Result<T> = std::result::Result<T, LlmMapError>;
@@ -151,16 +146,7 @@ mod tests {
         assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    #[test]
-    fn test_serde_yaml_error_conversion() {
-        let invalid_yaml = "not: valid: yaml:";
-        let result: serde_yaml::Result<serde_yaml::Value> = serde_yaml::from_str(invalid_yaml);
-        assert!(result.is_err());
-        
-        let err: LlmMapError = result.unwrap_err().into();
-        assert!(matches!(err, LlmMapError::Config(_)));
-        assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
-    }
+
 
     #[test]
     fn test_result_type_alias() {

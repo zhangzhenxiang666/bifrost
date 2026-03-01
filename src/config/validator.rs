@@ -33,8 +33,6 @@ impl Config {
             }
         }
 
-
-
         // Return first error if any
         if let Some(first_error) = errors.into_iter().next() {
             Err(first_error)
@@ -61,7 +59,7 @@ impl Config {
             )));
         }
 
-        // Validate base_url format
+        // Validate base_url is not empty
         if provider.base_url.trim().is_empty() {
             return Err(LlmMapError::Config(format!(
                 "Provider '{}' has an empty base_url",
@@ -76,18 +74,11 @@ impl Config {
                 provider_id, provider.base_url
             )));
         }
-
-        // Validate endpoint is not empty
-        if provider.endpoint.trim().is_empty() {
-            return Err(LlmMapError::Config(format!(
-                "Provider '{}' has an empty endpoint",
-                provider_id
-            )));
-        }
+        // Endpoint is an enum with Default, no need to validate for empty
+        // The enum automatically validates to Other for unknown values
 
         Ok(())
     }
-
 
     /// Check if a string is a valid URL
     fn is_valid_url(url: &str) -> bool {
@@ -104,13 +95,13 @@ mod tests {
     fn create_test_provider(
         base_url: &str,
         api_key: &str,
-        endpoint: &str,
+        endpoint: crate::config::Endpoint,
         adapters: Vec<&str>,
     ) -> ProviderConfig {
         ProviderConfig {
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
-            endpoint: endpoint.to_string(),
+            endpoint,
             adapter: adapters.into_iter().map(String::from).collect(),
             headers: Vec::new(),
             body: Vec::new(),
@@ -126,7 +117,7 @@ mod tests {
             create_test_provider(
                 "https://api.example.com/v1",
                 "sk-test-key",
-                "openai",
+                crate::config::Endpoint::Openai,
                 vec!["openai-to-qwen"],
             ),
         );
@@ -153,7 +144,12 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("https://api.test.com", "", "openai", vec![]),
+            create_test_provider(
+                "https://api.test.com",
+                "",
+                crate::config::Endpoint::Openai,
+                vec![],
+            ),
         );
 
         let config = Config {
@@ -175,7 +171,7 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("", "sk-key", "openai", vec![]),
+            create_test_provider("", "sk-key", crate::config::Endpoint::Openai, vec![]),
         );
 
         let config = Config {
@@ -197,7 +193,12 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("not-a-valid-url", "sk-key", "openai", vec![]),
+            create_test_provider(
+                "not-a-valid-url",
+                "sk-key",
+                crate::config::Endpoint::Openai,
+                vec![],
+            ),
         );
 
         let config = Config {
@@ -213,6 +214,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid base_url format"));
     }
+
     #[test]
     fn test_validate_invalid_adapter() {
         // No longer applicable - model entries removed
@@ -239,7 +241,12 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("https://api.test.com/v1", "sk-key", "openai", vec![]),
+            create_test_provider(
+                "https://api.test.com/v1",
+                "sk-key",
+                crate::config::Endpoint::Openai,
+                vec![],
+            ),
         );
 
         let config = Config {
@@ -259,7 +266,12 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("http://localhost:8080", "sk-key", "openai", vec![]),
+            create_test_provider(
+                "http://localhost:8080",
+                "sk-key",
+                crate::config::Endpoint::Openai,
+                vec![],
+            ),
         );
 
         let config = Config {

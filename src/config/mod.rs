@@ -141,7 +141,50 @@ pub struct BodyEntry {
     /// Body field value (can be string, number, boolean, etc.)
     pub value: serde_json::Value,
 }
+// =============================================================================
+// Endpoint Type
+// =============================================================================
 
+/// Provider endpoint type for API compatibility
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Endpoint {
+    /// OpenAI-compatible API format
+    Openai,
+    /// Anthropic API format
+    Anthropic,
+    /// Qwen API format
+    Qwen,
+    /// Other/custom endpoint types
+    #[serde(other)]
+    Other,
+}
+
+impl Endpoint {
+    /// Check if this is an OpenAI-compatible endpoint
+    pub fn is_openai(&self) -> bool {
+        matches!(self, Endpoint::Openai)
+    }
+
+    /// Check if this is an Anthropic endpoint
+    pub fn is_anthropic(&self) -> bool {
+        matches!(self, Endpoint::Anthropic)
+    }
+
+    /// Check if this is a Qwen endpoint
+    pub fn is_qwen(&self) -> bool {
+        matches!(self, Endpoint::Qwen)
+    }
+}
+
+// Default to OpenAI for backward compatibility
+impl Default for Endpoint {
+    fn default() -> Self {
+        Endpoint::Openai
+    }
+}
+
+/// Header key-value pair for HTTP requests
 /// Model-specific configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
@@ -163,7 +206,7 @@ pub struct ProviderConfig {
     /// API key for authentication
     pub api_key: String,
     /// Provider endpoint type (e.g., "openai", "anthropic")
-    pub endpoint: String,
+    pub endpoint: Endpoint,
     /// Adapters to apply for this provider (one or many)
     #[serde(default, deserialize_with = "one_or_many")]
     pub adapter: Vec<String>,
