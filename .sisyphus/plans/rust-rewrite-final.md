@@ -661,7 +661,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 9. GatewayResponse enum (axum::Sse) ✅
+- [x] 9. GatewayResponse enum (axum::Sse) ✅
 
   **做什么**:
   - 创建 `src/types/response.rs`
@@ -711,7 +711,7 @@ Wave FINAL (独立审查 - 4 任务并行):
   - 文件：`src/types/response.rs`
   - 预提交：`cargo test response`
 
----
+- [x] 10. Passthrough 适配器实现 ✅
 
 - [ ] 10. Passthrough 适配器实现
 
@@ -791,7 +791,7 @@ Wave FINAL (独立审查 - 4 任务并行):
   - 文件：`src/adapter/builtin/openai_to_qwen.rs`
   - 预提交：`cargo test openai_to_qwen`
 
----
+- [x] 12. HTTP 客户端封装 (reqwest) ✅
 
 - [ ] 12. HTTP 客户端封装 (reqwest)
 
@@ -874,7 +874,7 @@ Wave FINAL (独立审查 - 4 任务并行):
   - 文件：`src/provider/registry.rs`, `src/provider/mod.rs`
   - 预提交：`cargo test registry`
 
----
+- [x] 14. SSE 转换器实现 ✅
 
 - [ ] 14. SSE 转换器实现
 
