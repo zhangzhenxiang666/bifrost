@@ -11,6 +11,7 @@ use crate::provider::client::HttpClient;
 use std::collections::HashMap;
 
 /// Provider information containing configuration and built adapters
+#[derive(Clone)]
 pub struct ProviderInfo {
     config: ProviderConfig,
 }
@@ -43,6 +44,7 @@ impl ProviderInfo {
 /// - Loading provider configurations from the root config
 /// - Providing access to provider information
 /// - Building adapter chains (OnionExecutor) for specific providers
+#[derive(Clone)]
 pub struct ProviderRegistry {
     providers: HashMap<String, ProviderInfo>,
     http_client: HttpClient,
@@ -75,8 +77,8 @@ impl ProviderRegistry {
             providers.insert(id.clone(), ProviderInfo::new(provider_config.clone()));
         }
 
-        // Create HTTP client with 600 second timeout (10 minutes)
-        let http_client = HttpClient::new(600);
+        // Create HTTP client with 600 second timeout (10 minutes) and optional proxy
+        let http_client = HttpClient::new(600, config.server.proxy.as_deref());
 
         Self {
             providers,

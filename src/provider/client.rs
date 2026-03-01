@@ -3,24 +3,31 @@
 //! Provides a wrapper around reqwest::Client with support for
 //! both non-streaming and streaming requests.
 
-use bytes::Bytes;
+
 use eventsource_stream::{Eventsource, EventStreamError};
 use futures::stream::Stream;
-use futures::StreamExt;
+
 use http::HeaderMap;
 use reqwest::{Client, Response};
 use serde_json::Value;
 
 /// HTTP client wrapper with configurable timeout
+#[derive(Clone)]
 pub struct HttpClient {
     client: Client,
 }
 
 impl HttpClient {
-    /// Create a new HttpClient with the specified timeout in seconds
-    pub fn new(timeout_secs: u64) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+    /// Create a new HttpClient with the specified timeout in seconds and optional proxy
+    pub fn new(timeout_secs: u64, proxy: Option<&str>) -> Self {
+        let mut builder = Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs));
+        
+        if let Some(proxy_url) = proxy {
+            builder = builder.proxy(reqwest::Proxy::all(proxy_url).expect("Failed to parse proxy URL"));
+        }
+        
+        let client = builder
             .build()
             .expect("Failed to build HTTP client");
         Self { client }
@@ -58,12 +65,21 @@ impl HttpClient {
     ///
     /// # Returns
     /// A stream of SSE events
+    /// Send a streaming POST request and process SSE events
+    ///
+    /// # Arguments
+    /// * `url` - The target URL
+    /// * `body` - JSON body to send
+    /// * `headers` - HTTP headers to include
+    ///
+    /// # Returns
+    /// A Result containing a stream of SSE events, or reqwest::Error on request failure
     pub async fn send_sse_stream(
         &self,
         url: &str,
         body: Value,
         headers: &HeaderMap,
-    ) -> impl Stream<Item = Result<eventsource_stream::Event, EventStreamError<reqwest::Error>>> {
+    ) -> Result<impl Stream<Item = Result<eventsource_stream::Event, EventStreamError<reqwest::Error>>>, reqwest::Error> {
         use http::header::ACCEPT;
 
         let mut headers = headers.clone();
@@ -75,64 +91,13 @@ impl HttpClient {
             .headers(headers)
             .json(&body)
             .send()
-            .await;
+            .await?;
 
-        match response {
-            Ok(resp) => resp.bytes_stream().eventsource().boxed(),
-            Err(e) => {
-                // Return a stream that immediately yields an error
-                // Use Transport variant to wrap reqwest::Error
-                futures::stream::once(async move {
-                    Err(EventStreamError::Transport(e))
-                })
-                .boxed()
-            }
-        }
-    }
-
-    /// Send a streaming POST request (legacy API, returns raw bytes stream)
-    ///
-    /// # Arguments
-    /// * `url` - The target URL
-    /// * `body` - JSON body to send
-    /// * `headers` - HTTP headers to include
-    ///
-    /// # Returns
-    /// A stream of response chunks as Bytes
-    pub async fn send_stream(
-        &self,
-        url: &str,
-        body: Value,
-        headers: &HeaderMap,
-    ) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
-        let response = self
-            .client
-            .post(url)
-            .headers(headers.clone())
-            .json(&body)
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                let stream = resp.bytes_stream();
-                futures::stream::unfold(Some(stream), |state_option| async {
-                    if let Some(mut stream) = state_option {
-                        if let Some(chunk_result) = stream.next().await {
-                            return Some((chunk_result, Some(stream)));
-                        }
-                    }
-                    None
-                })
-                .boxed()
-            }
-            Err(e) => {
-                // Return a stream that immediately yields an error
-                futures::stream::once(async move { Err(e) }).boxed()
-            }
-        }
+        Ok(response.bytes_stream().eventsource())
     }
 }
+
+
 
 // Helper wrapper for stream state (deprecated)
 // This enum is no longer used with the new eventsource-stream implementation
@@ -147,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_client_new() {
-        let client = HttpClient::new(600);
+        let client = HttpClient::new(600, None);
         // Just verify it can be created
         assert!(true);
     }
@@ -168,7 +133,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = HttpClient::new(600);
+        let client = HttpClient::new(600, None);
         let url = format!("{}/test", mock_server.uri());
         let body = json!({"query": "test"});
         let headers = HeaderMap::new();
@@ -189,7 +154,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = HttpClient::new(600);
+        let client = HttpClient::new(600, None);
         let url = format!("{}/test", mock_server.uri());
         let body = json!({"query": "test"});
 
@@ -202,41 +167,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_stream_basic() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/stream"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("chunk1chunk2chunk3"))
-            .mount(&mock_server)
-            .await;
-
-        let client = HttpClient::new(600);
-        let url = format!("{}/stream", mock_server.uri());
-        let body = json!({"query": "stream test"});
-        let headers = HeaderMap::new();
-
-        let stream = client.send_stream(&url, body, &headers).await;
-        let chunks: Vec<_> = stream.collect().await;
-
-        // Verify we received chunks
-        assert!(!chunks.is_empty());
-    }
-
-    #[tokio::test]
     async fn test_timeout_configuration() {
         // Test that client can be created with different timeout values
-        let client_short = HttpClient::new(5);
-        let client_long = HttpClient::new(600);
+        let client_short = HttpClient::new(5, None);
+        let client_long = HttpClient::new(600, None);
 
         // Both should be usable
         assert!(true);
     }
 
+
+
     #[tokio::test]
     async fn test_send_request_error_handling() {
         // Test with invalid URL
-        let client = HttpClient::new(600);
+        let client = HttpClient::new(600, None);
         let body = json!({"query": "test"});
         let headers = HeaderMap::new();
 

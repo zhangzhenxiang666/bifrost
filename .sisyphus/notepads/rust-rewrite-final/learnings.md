@@ -1071,3 +1071,179 @@ impl ProviderInfo {
 - 适配器名称支持两种格式：`openai_to_qwen` 和 `openai-to-qwen`（下划线和连字符）
 - HTTP 客户端超时设置为 600 秒（10 分钟），适用于 LLM 长请求
 - ProviderRegistry 设计为不可变，创建后不能修改
+
+
+## Task 15 Completion - OpenAI Compatible Route - 2026-03-01
+
+### Completed Items
+- ✅ 创建 `src/routes/openai.rs`
+- ✅ 实现 `chat_completions` 处理函数
+- ✅ 实现 `parse_model()` 解析 `provider@model` 格式
+- ✅ 根据 `stream: bool` 返回 `GatewayResponse::Json` 或 `GatewayResponse::Sse`
+- ✅ 更新 `src/routes/mod.rs` 声明并导出模块
+- ✅ 编写 10 个单元测试（4 个解析测试 + 6 个处理器测试）
+- ✅ `cargo test routes` 通过（10 tests passed）
+- ✅ `cargo check` 通过
+
+### Key Implementation Details
+
+#### 1. AppState Structure
+```rust
+#[derive(Clone)]
+pub struct AppState {
+    pub registry: ProviderRegistry,
+}
+```
+- 需要 `Clone` 因为 axum 的 `State` extractor 要求
+- 通过 `From<ProviderRegistry>` 实现轻松转换
+
+#### 2. parse_model Function
+```rust
+fn parse_model(model: &str) -> Result<(&str, &str)> {
+    model
+        .split_once('@')
+        .ok_or_else(|| LlmMapError::Validation(
+            "Invalid model format. Expected 'provider@model' format".to_string()
+        ))
+}
+```
+- 使用 `split_once('@')` 简洁地分割字符串
+- 返回错误包含明确的格式提示
+- 测试覆盖：正常格式、缺少 @、空字符串、多个 @
+
+#### 3. chat_completions Handler
+```rust
+#[axum::debug_handler]
+pub async fn chat_completions(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<GatewayResponse> {
+    // 1. 提取 stream 标志（默认 false）
+    let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    
+    // 2. 提取并解析 model 字段
+    let model = body.get("model").and_then(|v| v.as_str())
+        .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
+    let (provider_id, _model_name) = parse_model(model)?;
+    
+    // 3. 构建适配器链
+    let executor = state.registry.build_executor(provider_id)?;
+    
+    // 4. 执行请求
+    let transform = executor.execute_request(body.clone(), &headers).await?;
+    
+    // 5. 根据 stream 标志返回不同类型
+    Ok(if is_stream {
+        GatewayResponse::Sse(convert_to_sse(transform.body))
+    } else {
+        GatewayResponse::Json(Json(transform.body))
+    })
+}
+```
+
+#### 4. Error Handling
+- **400 Bad Request**: 缺少 model 字段、无效格式
+- **404 Not Found**: Provider 不存在（实际返回 502 BAD_GATEWAY）
+- **500 Internal Server Error**: 适配器执行失败
+
+### Test Coverage (10 tests)
+
+**parse_model 测试**:
+1. `test_parse_model_with_provider` - 正常格式 "qwen-code@gpt-4"
+2. `test_parse_model_without_provider` - 缺少 @ 返回错误
+3. `test_parse_model_empty_string` - 空字符串错误
+4. `test_parse_model_multiple_at_signs` - 多个 @ 只分割第一个
+
+**chat_completions 测试**:
+5. `test_chat_completions_non_stream_request` - 非流式返回 JSON
+6. `test_chat_completions_stream_request` - 流式返回 SSE (text/event-stream)
+7. `test_chat_completions_missing_model` - 缺少 model 返回 400
+8. `test_chat_completions_invalid_model_format` - 无效格式返回 400
+9. `test_chat_completions_provider_not_found` - Provider 不存在返回 502
+10. `test_chat_completions_default_stream_false` - 默认 stream=false
+
+### Technical Decisions
+
+#### 1. axum macros feature
+```toml
+axum = { version = "0.8.8", features = ["macros"] }
+```
+- `#[axum::debug_handler]` 需要启用 `macros` feature
+- 提供更好的编译时错误信息
+
+#### 2. Clone for ProviderRegistry and HttpClient
+- 为 `ProviderRegistry`、`ProviderInfo`、`HttpClient` 添加 `#[derive(Clone)]`
+- 原因：`AppState` 需要 `Clone` 用于 axum 的 `State` extractor
+- `reqwest::Client` 本身是 `Clone`，所以 `HttpClient` 可以轻松实现 `Clone`
+
+#### 3. Tower dependency for testing
+```toml
+tower = "0.5"
+```
+- 测试中需要 `ServiceExt::oneshot()` 来发送测试请求
+- 导入：`use tower::util::ServiceExt;`
+
+#### 4. Body construction in tests
+```rust
+.body(Body::from(
+    serde_json::to_string(&json!({...})).unwrap()
+))
+```
+- axum 0.8 的 `Body` 没有 `from_json` 方法
+- 使用 `serde_json::to_string` 序列化后传入
+
+### Lessons Learned
+
+1. **axum State extractor requires Clone**
+   - `State<T>` 要求 `T: Clone + Send + Sync`
+   - 需要为 `AppState` 和所有嵌套字段派生 `Clone`
+   - 解决方案：`#[derive(Clone)]` on `ProviderRegistry`, `ProviderInfo`, `HttpClient`
+
+2. **debug_handler needs macros feature**
+   - `#[axum::debug_handler]` 不是默认启用的
+   - 必须在 `Cargo.toml` 中添加 `axum = { ..., features = ["macros"] }`
+   - 否则编译错误："could not find `debug_handler` in `axum`"
+
+3. **Testing axum handlers**
+   - 使用 `axum::Router` 构建测试应用
+   - 使用 `tower::util::ServiceExt::oneshot()` 发送请求
+   - 使用 `axum::body::Body::from()` 构造请求体
+   - 验证响应状态码和 headers
+
+4. **SSE content-type verification**
+   - SSE 响应的 `Content-Type` 是 `text/event-stream`
+   - 测试中可以通过 `response.headers().get("content-type")` 验证
+
+5. **Error status codes**
+   - `LlmMapError::Validation` → 400 BAD_REQUEST
+   - `LlmMapError::Provider` → 502 BAD_GATEWAY
+   - `LlmMapError::Adapter` → 500 INTERNAL_SERVER_ERROR
+
+### Files Modified
+- `src/routes/openai.rs` - 新建（341 行，包含 10 个测试）
+- `src/routes/mod.rs` - 添加 `pub mod openai;` 和 re-exports
+- `src/provider/registry.rs` - 添加 `#[derive(Clone)]`
+- `src/provider/client.rs` - 添加 `#[derive(Clone)]`
+- `Cargo.toml` - 添加 `tower = "0.5"` 和 axum `macros` feature
+
+### Verification
+```bash
+cargo test routes
+# running 10 tests
+# test routes::openai::tests::test_parse_model_empty_string ... ok
+# test routes::openai::tests::test_parse_model_multiple_at_signs ... ok
+# test routes::openai::tests::test_parse_model_with_provider ... ok
+# test routes::openai::tests::test_parse_model_without_provider ... ok
+# test routes::openai::tests::test_chat_completions_default_stream_false ... ok
+# test routes::openai::tests::test_chat_completions_invalid_model_format ... ok
+# test routes::openai::tests::test_chat_completions_missing_model ... ok
+# test routes::openai::tests::test_chat_completions_non_stream_request ... ok
+# test routes::openai::tests::test_chat_completions_provider_not_found ... ok
+# test routes::openai::tests::test_chat_completions_stream_request ... ok
+#
+# test result: ok. 10 passed; 0 failed
+
+cargo check
+# Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.89s
+```
+

@@ -148,8 +148,10 @@ pub struct BodyEntry {
 /// Provider endpoint type for API compatibility
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Endpoint {
     /// OpenAI-compatible API format
+    #[default]
     Openai,
     /// Anthropic API format
     Anthropic,
@@ -178,11 +180,6 @@ impl Endpoint {
 }
 
 // Default to OpenAI for backward compatibility
-impl Default for Endpoint {
-    fn default() -> Self {
-        Endpoint::Openai
-    }
-}
 
 /// Header key-value pair for HTTP requests
 /// Model-specific configuration
