@@ -969,3 +969,105 @@ Python 的 `qwencode.py` 关键逻辑：
 2. **Passthrough 响应**: Qwen API 已返回 OpenAI 兼容格式，无需转换
 3. **Headers 优先**: 主要转换是添加 Qwen 特定的认证和缓存 headers
 
+
+
+## Task 13 Completion - Provider Registry - 2026-03-01
+
+### Completed Items
+- ✅ 创建 `src/provider/registry.rs`
+- ✅ 实现 `ProviderRegistry` 结构
+- ✅ 实现 `ProviderInfo` 结构
+- ✅ 实现 `from_config(&Config)` - 从配置构建注册表
+- ✅ 实现 `get(&str)` - 获取 provider 信息
+- ✅ 实现 `build_executor(&str)` - 构建适配器链
+- ✅ 实现 `build_adapter_chain()` - 根据配置构建适配器链
+- ✅ 更新 `src/provider/mod.rs` 声明并 re-export
+- ✅ 编写 10 个单元测试
+- ✅ `cargo test registry` 通过（10 tests passed）
+- ✅ `cargo check` 通过
+
+### Key Design Decisions
+
+#### 1. ProviderInfo 结构
+```rust
+pub struct ProviderInfo {
+    config: ProviderConfig,
+}
+```
+- 封装 ProviderConfig，提供只读访问
+- 提供便捷方法：`base_url()`, `api_key()`, `config()`
+
+#### 2. ProviderRegistry 结构
+```rust
+pub struct ProviderRegistry {
+    providers: HashMap<String, ProviderInfo>,
+    http_client: HttpClient,
+}
+```
+- 使用 HashMap 存储 provider，支持 O(1) 查找
+- 内置 HttpClient（600 秒超时）供后续使用
+
+#### 3. 适配器链构建逻辑
+```rust
+fn build_adapter_chain(
+    &self,
+    adapter_names: &[String],
+) -> Result<Vec<Box<dyn Adapter<Error = LlmMapError>>>>
+```
+- 空适配器列表 → 默认使用 `PassthroughAdapter`
+- 支持适配器：
+  - `"passthrough"` → `PassthroughAdapter`
+  - `"openai_to_qwen"` / `"openai-to-qwen"` → `OpenAIToQwenAdapter`
+- 未知适配器返回 `LlmMapError::Adapter` 错误
+
+#### 4. 配置合并
+- Provider 级别的 headers/body 在 `ProviderConfig` 中存储
+- Model 级别的 headers/body 在 `ModelConfig` 中存储
+- 运行时由 `OnionExecutor` 负责应用这些配置
+
+### Test Coverage
+
+1. **test_from_config** - 验证从配置构建注册表
+2. **test_get_provider** - 验证获取 provider 信息
+3. **test_get_non_existent_provider** - 验证不存在 provider 返回 None
+4. **test_build_executor_passthrough** - 验证构建默认适配器链
+5. **test_build_executor_with_adapter** - 验证构建带适配器的链
+6. **test_build_executor_non_existent_provider** - 验证错误处理
+7. **test_build_executor_unknown_adapter** - 验证未知适配器错误
+8. **test_provider_info_config_accessor** - 验证配置访问器
+9. **test_http_client_access** - 验证 HTTP 客户端访问
+10. **test_config_with_headers_and_body** - 验证 headers/body 配置
+
+### API Design
+
+```rust
+impl ProviderRegistry {
+    pub fn from_config(config: &Config) -> Self;
+    pub fn get(&self, id: &str) -> Option<&ProviderInfo>;
+    pub fn build_executor(&self, provider_id: &str) -> Result<OnionExecutor>;
+    pub fn http_client(&self) -> &HttpClient;
+    pub fn provider_count(&self) -> usize;
+    pub fn has_provider(&self, id: &str) -> bool;
+}
+
+impl ProviderInfo {
+    pub fn new(config: ProviderConfig) -> Self;
+    pub fn config(&self) -> &ProviderConfig;
+    pub fn base_url(&self) -> &str;
+    pub fn api_key(&self) -> &str;
+}
+```
+
+### Integration Points
+
+- **依赖**: `Config`, `ProviderConfig` (from `src/config/mod.rs`)
+- **依赖**: `OnionExecutor` (from `src/adapter/chain.rs`)
+- **依赖**: `Adapter` trait, `PassthroughAdapter`, `OpenAIToQwenAdapter`
+- **依赖**: `HttpClient` (from `src/provider/client.rs`)
+- **依赖**: `LlmMapError` (from `src/error.rs`)
+- **提供给**: routes 模块（通过 `build_executor` 构建执行器）
+
+### Notes
+- 适配器名称支持两种格式：`openai_to_qwen` 和 `openai-to-qwen`（下划线和连字符）
+- HTTP 客户端超时设置为 600 秒（10 分钟），适用于 LLM 长请求
+- ProviderRegistry 设计为不可变，创建后不能修改
