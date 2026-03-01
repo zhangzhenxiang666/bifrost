@@ -552,7 +552,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 7. Adapter trait (使用 async-trait) ✅
+- [x] 7. Adapter trait (使用 async-trait) ✅
 
   **做什么**:
   - 创建 `src/adapter/mod.rs`, `src/adapter/trait.rs`, `src/adapter/context.rs`

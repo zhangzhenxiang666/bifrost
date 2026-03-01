@@ -606,3 +606,159 @@ pub struct ServerConfig {
 - `port` 在根级别，不是 `[server]` 表下
 - `models` 数组嵌套在 `[provider.xxx]` 内部，不是独立的 `[[model]]` 数组
 - 移除不必要的 `ModelEntry` 结构，简化配置模型
+
+## Task 7 Completion - Adapter trait (使用 async-trait) - 2026-03-01T17:45:00+08:00
+
+### Completed Items
+- ✅ 创建 `src/adapter/trait.rs` - 定义 `Adapter` trait 使用 `#[async_trait]`
+- ✅ 创建 `src/adapter/context.rs` - 定义 `RequestContext` 和 `ResponseContext`
+- ✅ 更新 `src/adapter/mod.rs` - 声明模块并 re-export
+- ✅ `cargo check` 通过
+- ✅ `cargo doc --no-deps` 生成无警告（adapter 模块）
+
+### Adapter Trait Definition
+
+```rust
+#[async_trait]
+pub trait Adapter: Send + Sync {
+    type Error: std::error::Error + Send + Sync;
+    
+    async fn transform_request(
+        &self,
+        body: serde_json::Value,
+        url: &str,
+        headers: &http::HeaderMap,
+    ) -> Result<RequestTransform, Self::Error>;
+    
+    async fn transform_response(
+        &self,
+        body: serde_json::Value,
+        status: http::StatusCode,
+        headers: &http::HeaderMap,
+    ) -> Result<ResponseTransform, Self::Error>;
+    
+    async fn transform_stream_chunk(
+        &self,
+        chunk: serde_json::Value,
+    ) -> Result<StreamChunkTransform, Self::Error>;
+}
+```
+
+### Context Types
+
+#### RequestContext
+包含请求的上下文信息：
+- `request_id: RequestId` - 请求唯一标识
+- `adapter_id: AdapterId` - 使用的适配器
+- `provider_id: ProviderId` - 目标 LLM 提供商
+- `model_id: ModelId` - 请求的模型
+- `url: String` - 目标 URL
+- `headers: HeaderMap` - HTTP 请求头
+- `created_at: SystemTime` - 创建时间
+
+#### ResponseContext
+包含响应的上下文信息：
+- `request_id: RequestId` - 对应的请求 ID
+- `adapter_id: AdapterId` - 使用的适配器
+- `provider_id: ProviderId` - 发送响应的提供商
+- `model_id: ModelId` - 生成响应的模型
+- `status: StatusCode` - HTTP 状态码
+- `headers: HeaderMap` - HTTP 响应头
+- `received_at: SystemTime` - 接收时间
+
+### async-trait Usage
+
+#### Why async-trait?
+- Rust 原生 trait 不支持 async 方法（返回 `impl Future` 需要泛型关联类型）
+- `async-trait` 宏自动将 async 方法转换为 `Pin<Box<dyn Future>>`
+- 简化代码，无需手动处理生命周期和 Future 类型
+
+#### Cargo.toml Dependency
+```toml
+async-trait = "0.1"
+```
+
+#### Implementation Pattern
+```rust
+use async_trait::async_trait;
+
+#[async_trait]
+impl Adapter for MyAdapter {
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+    
+    async fn transform_request(...) -> Result<RequestTransform, Self::Error> {
+        // async implementation
+    }
+}
+```
+
+### Module Structure
+
+```
+src/adapter/
+├── mod.rs      # 模块声明 + re-export
+├── trait.rs    # Adapter trait 定义
+└── context.rs  # RequestContext, ResponseContext
+```
+
+#### mod.rs Content
+```rust
+pub mod context;
+pub mod r#trait;  // 使用 r# 转义关键字
+
+pub use context::{RequestContext, ResponseContext};
+pub use r#trait::Adapter;
+```
+
+### Test Coverage (4 tests in context.rs)
+1. `test_request_context_new` - 基本创建
+2. `test_request_context_with_url` - 带 URL 创建
+3. `test_response_context_new` - 基本创建
+4. `test_response_context_with_headers` - 带响应头创建
+
+### Lessons Learned
+
+1. **async-trait 简化异步代码**
+   - 无需手动写 `Pin<Box<dyn Future<Output = T>>>`
+   - 宏自动处理返回类型转换
+   - 代码更清晰易读
+
+2. **r#trait 语法**
+   - `trait` 是 Rust 关键字，模块名需要转义
+   - 使用 `r#trait` 或改名如 `adapter_trait`
+   - re-export 时使用 `pub use r#trait::Adapter`
+
+3. **Context 类型设计**
+   - 使用 `SystemTime` 记录时间戳便于追踪和调试
+   - 提供多个构造函数：`new()`, `with_url()`, `with_headers()`
+   - 所有字段使用 `pub` 便于适配器直接访问
+
+4. **文档链接修复**
+   - `async_trait` 既是 crate 又是宏，文档链接有歧义
+   - 使用 `macro@async_trait` 明确指向宏
+   - `cargo doc` 警告需要及时处理
+
+5. **Send + Sync bound**
+   - `Adapter: Send + Sync` 确保 trait 对象可以在线程间安全传递
+   - `type Error: Send + Sync` 确保错误也可以安全传递
+   - 这对异步运行时（如 tokio）的多线程执行至关重要
+
+### Files Created/Modified
+- `src/adapter/trait.rs` - 新建（126 行，包含文档和示例）
+- `src/adapter/context.rs` - 新建（300 行，包含 4 个测试）
+- `src/adapter/mod.rs` - 更新（添加模块声明和 re-export）
+
+### Verification
+```bash
+cargo check
+# Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.36s
+
+cargo doc --no-deps
+# Generated /home/zzx/Codespace/rust_code/llm-map/target/doc/llm_map/index.html
+# (adapter 模块无警告)
+```
+
+### Next Steps (T10-T11)
+- T10: 实现 OpenAI Adapter
+- T11: 实现 Anthropic Adapter
+- 具体适配器将实现 `Adapter` trait 的三個方法
