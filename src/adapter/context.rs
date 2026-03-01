@@ -3,6 +3,7 @@
 //! This module provides context structures that hold metadata about
 //! requests and responses during the adapter transformation process.
 
+use crate::config::ProviderConfig;
 use crate::types::{AdapterId, ModelId, ProviderId, RequestId};
 use http::HeaderMap;
 use std::time::SystemTime;
@@ -230,7 +231,76 @@ impl ResponseContext {
         }
     }
 }
+// =============================================================================
+// Adapter Context - For adapter construction and configuration access
+// =============================================================================
 
+
+// =============================================================================
+// Adapter Context - For adapter construction and configuration access
+// =============================================================================
+
+/// Context for constructing an adapter with access to provider configuration.
+///
+/// This structure is used when creating an adapter instance, providing access
+/// to the provider's configuration such as `base_url`, `api_key`, `headers`, and `body`.
+///
+/// # Fields
+///
+/// * `provider_config` - Reference to the provider configuration
+/// * `model_config` - Optional model-specific configuration
+///
+/// # Example
+///
+/// ```rust
+/// use llm_map::adapter::AdapterContext;
+/// use llm_map::config::ProviderConfig;
+///
+/// fn create_adapter(ctx: &AdapterContext) {
+///     let base_url = &ctx.provider_config.base_url;
+///     let api_key = &ctx.provider_config.api_key;
+///     // Use configuration to initialize adapter
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct AdapterContext<'a> {
+    /// The provider configuration
+    pub provider_config: &'a ProviderConfig,
+    /// Optional model-specific configuration
+    pub model_config: Option<&'a crate::config::ModelConfig>,
+}
+
+impl<'a> AdapterContext<'a> {
+    /// Create a new adapter context with provider configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider_config` - Reference to the provider configuration
+    ///
+    /// The `model_config` field is initialized to `None`.
+    pub fn new(provider_config: &'a ProviderConfig) -> Self {
+        Self {
+            provider_config,
+            model_config: None,
+        }
+    }
+
+    /// Create a new adapter context with both provider and model configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider_config` - Reference to the provider configuration
+    /// * `model_config` - Reference to the model configuration
+    pub fn with_model(
+        provider_config: &'a ProviderConfig,
+        model_config: &'a crate::config::ModelConfig,
+    ) -> Self {
+        Self {
+            provider_config,
+            model_config: Some(model_config),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

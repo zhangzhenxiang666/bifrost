@@ -4,7 +4,9 @@
 //! The trait uses [`macro@async_trait`] to allow async methods in traits.
 
 use async_trait::async_trait;
+use crate::config::ProviderConfig;
 use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+
 
 /// Core trait for LLM provider adapters.
 ///
@@ -20,6 +22,7 @@ use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 /// ```rust,no_run
 /// use async_trait::async_trait;
 /// use llm_map::adapter::Adapter;
+/// use llm_map::config::ProviderConfig;
 /// use llm_map::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 ///
 /// struct MyAdapter;
@@ -31,7 +34,7 @@ use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 ///     async fn transform_request(
 ///         &self,
 ///         body: serde_json::Value,
-///         url: &str,
+///         provider_config: &ProviderConfig,
 ///         headers: &http::HeaderMap,
 ///     ) -> Result<RequestTransform, Self::Error> {
 ///         Ok(RequestTransform::new(body))
@@ -53,7 +56,7 @@ use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 ///         Ok(StreamChunkTransform::new(chunk))
 ///     }
 /// }
-/// ```
+
 #[async_trait]
 pub trait Adapter: Send + Sync {
     /// The error type returned by this adapter.
@@ -63,13 +66,14 @@ pub trait Adapter: Send + Sync {
 
     /// Transform an outgoing request before sending to the LLM provider.
     ///
-    /// This method is called with the original request body, URL, and headers.
-    /// The adapter can modify any of these values to match the provider's API format.
+    /// This method is called with the original request body and headers.
+    /// The adapter can access the provider configuration (base_url, api_key, headers, body)
+    /// and modify the request to match the provider's API format.
     ///
     /// # Arguments
     ///
     /// * `body` - The original request body as JSON
-    /// * `url` - The target URL for the request
+    /// * `provider_config` - The provider configuration containing base_url, api_key, etc.
     /// * `headers` - The HTTP headers to be sent
     ///
     /// # Returns
@@ -80,7 +84,7 @@ pub trait Adapter: Send + Sync {
     async fn transform_request(
         &self,
         body: serde_json::Value,
-        url: &str,
+        provider_config: &ProviderConfig,
         headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error>;
 

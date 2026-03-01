@@ -762,3 +762,159 @@ cargo doc --no-deps
 - T10: 实现 OpenAI Adapter
 - T11: 实现 Anthropic Adapter
 - 具体适配器将实现 `Adapter` trait 的三個方法
+
+## Task 8: 洋葱模型执行器 + 响应头透传
+
+**完成时间**: 2026-03-01
+
+### 实现内容
+
+创建了 `src/adapter/chain.rs`，实现了洋葱模型执行器：
+
+1. **OnionExecutor 结构**
+   - 持有 `Vec<Box<dyn Adapter<Error = LlmMapError>>>` 适配器链
+   - 提供 `new()` 构造函数
+   - 提供 `adapter_count()` 辅助方法
+
+2. **请求正向执行** (`execute_request`)
+   - 执行顺序：A → B → C
+   - 每个适配器的输出作为下一个适配器的输入
+   - 支持 body、url、headers 的累积修改
+
+3. **响应反向执行** (`execute_response`)
+   - 执行顺序：C → B → A
+   - 使用 `iter().rev()` 实现反向迭代
+   - 支持 body、status、headers 的累积修改
+
+4. **响应头透传逻辑**
+   - ✅ 透传：所有上游 headers（x-ratelimit-*、retry-after、x-request-id 等）
+   - ❌ 排除：`content-length` 和 `transfer-encoding`（由 axum 重新计算）
+   - 适配器可以覆盖透传的头
+
+5. **单元测试** (6 个测试全部通过)
+   - `test_request_execution_order`: 验证请求正向执行 A→B→C
+   - `test_response_execution_order`: 验证响应反向执行 C→B→A
+   - `test_header_passthrough`: 验证头透传逻辑（包含 x-ratelimit-*，排除 content-length）
+   - `test_full_onion_flow`: 验证完整的洋葱执行流程
+   - `test_empty_adapter_chain`: 验证空适配器链
+   - `test_adapter_count`: 验证适配器计数
+
+### 关键代码模式
+
+**响应头透传实现**:
+```rust
+for (key, value) in upstream_headers {
+    let key_name = key.as_str();
+    if key_name != "content-length" && key_name != "transfer-encoding" {
+        current_headers.insert(key, value.clone());
+    }
+}
+```
+
+**反向迭代执行**:
+```rust
+for adapter in self.adapters.iter().rev() {
+    // C → B → A
+}
+```
+
+### 验收结果
+
+- ✅ `OnionExecutor` 结构定义完成
+- ✅ 请求正向执行适配器链
+- ✅ 响应反向执行适配器链
+- ✅ 响应头正确透传（x-ratelimit-* 等）
+- ✅ content-length 正确排除
+- ✅ 6 个单元测试全部通过
+- ✅ `cargo test chain` 通过
+- ✅ `cargo check` 编译通过
+
+
+## 2026-03-01: Adapter trait 重新设计 - 支持访问 Provider 配置
+
+### 问题
+原始的 Adapter trait 无法访问 provider 配置（`base_url`, `api_key`, `headers`, `body` 等），适配器无法知道要发送到哪个 URL 或使用什么认证信息。
+
+### 解决方案
+采用 **Option B**（推荐）：在 `transform_request` 方法中添加 `provider_config: &ProviderConfig` 参数。
+
+### 关键改动
+
+#### 1. Adapter trait (`src/adapter/trait.rs`)
+```rust
+// 之前
+async fn transform_request(
+    &self,
+    body: serde_json::Value,
+    url: &str,  // ❌ url 从哪来？
+    headers: &http::HeaderMap,
+) -> Result<RequestTransform, Self::Error>;
+
+// 之后
+async fn transform_request(
+    &self,
+    body: serde_json::Value,
+    provider_config: &ProviderConfig,  // ✅ 直接访问 provider 配置
+    headers: &http::HeaderMap,
+) -> Result<RequestTransform, Self::Error>;
+```
+
+#### 2. OnionExecutor (`src/adapter/chain.rs`)
+```rust
+pub struct OnionExecutor {
+    adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>,
+    provider_config: ProviderConfig,  // ✅ 持有 provider 配置
+}
+
+impl OnionExecutor {
+    // 构造函数需要传入 provider_config
+    pub fn new(
+        adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>,
+        provider_config: ProviderConfig,
+    ) -> Self { ... }
+    
+    // execute_request 不再需要 url 参数，自动使用 provider_config.base_url
+    pub async fn execute_request(
+        &self,
+        body: serde_json::Value,
+        headers: &http::HeaderMap,
+    ) -> Result<RequestTransform> {
+        let mut current_url = self.provider_config.base_url.clone();  // ✅ 自动使用配置的 base_url
+        // ...
+        for adapter in &self.adapters {
+            let transform = adapter
+                .transform_request(current_body, &self.provider_config, &current_headers)
+                .await?;
+            // ...
+        }
+    }
+}
+```
+
+#### 3. AdapterContext (`src/adapter/context.rs`)
+添加了 `AdapterContext` 结构体（虽然最终没有用在 trait 中，但保留了作为未来扩展）：
+```rust
+pub struct AdapterContext<'a> {
+    pub provider_config: &'a ProviderConfig,
+    pub model_config: Option<&'a crate::config::ModelConfig>,
+}
+```
+
+### 设计决策
+选择了更简单直接的 **Option A**（在方法签名中添加 `provider_config` 参数）而不是 **Option B**（创建 `AdapterContext` 在构造时传入）。
+
+原因：
+1. **更简单**：不需要修改适配器的构造逻辑
+2. **更灵活**：适配器可以在每次请求时访问最新的配置
+3. **更符合 Rust 习惯**：通过参数传递依赖，而不是在构造时绑定
+
+### 学到的经验
+1. **Trait 方法参数设计**：当 trait 方法需要访问外部数据时，优先考虑通过参数传递，而不是在 trait 对象中存储状态
+2. **所有权 vs 引用**：`OnionExecutor` 持有 `ProviderConfig` 的所有权（而非引用），避免了生命周期问题
+3. **测试辅助函数**：创建 `test_provider_config()` 辅助函数简化测试代码
+
+### 验收标准 ✅
+- [x] Adapter 可以访问 provider 配置
+- [x] 可以获取 base_url, api_key, headers, body
+- [x] 编译通过 (`cargo check`)
+- [x] 测试通过 (`cargo test adapter`)
