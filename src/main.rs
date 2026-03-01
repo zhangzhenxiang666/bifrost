@@ -1,12 +1,10 @@
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use llm_map::utils::init_logging;
 
 #[tokio::main]
 async fn main() {
     // Initialize logging
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    init_logging();
 
     info!("LLM Map service starting...");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));

@@ -31,3 +31,472 @@
 - edition 从 2024 修正为 2021（Rust 最新稳定版）
 - tokio 添加了 'full' feature 以支持 multi-thread runtime
 
+
+## Task 2 Completion - 2026-03-01T17:30:00+08:00
+
+### Completed Items
+- ✅ 扩展 LlmMapError 添加 ValidationError 变体
+- ✅ 实现 IntoResponse trait 用于 axum 集成
+- ✅ 实现 From trait (serde_json::Error, serde_yaml::Error)
+- ✅ 编写 8 个单元测试验证错误类型和转换
+- ✅ cargo test error 通过（8 tests passed）
+- ✅ cargo check 通过
+
+### Error Types Implemented
+1. **Config(String)** - 配置错误（BAD_REQUEST）
+2. **Provider(String)** - LLM 提供商 API 错误（BAD_GATEWAY）
+3. **Adapter(String)** - 数据适配器错误（INTERNAL_SERVER_ERROR）
+4. **Http(reqwest::Error)** - HTTP 请求错误（BAD_GATEWAY）
+5. **Validation(String)** - 输入验证错误（BAD_REQUEST）
+6. **Internal(anyhow::Error)** - 内部错误（INTERNAL_SERVER_ERROR）
+
+### Key Implementation Patterns
+
+#### IntoResponse Implementation
+```rust
+impl IntoResponse for LlmMapError {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
+        let code = self.error_code();
+        
+        let body = Json(json!({
+            "error": {
+                "code": code,
+                "message": self.to_string(),
+            }
+        }));
+
+        (status, body).into_response()
+    }
+}
+```
+
+#### Helper Methods
+- `status_code()` - 返回适当的 HTTP 状态码
+- `error_code()` - 返回 API 错误代码常量（如 "CONFIG_ERROR"）
+
+#### From Trait Implementations
+- `From<serde_json::Error>` → `LlmMapError::Internal`
+- `From<serde_yaml::Error>` → `LlmMapError::Config`
+- `From<reqwest::Error>` → `LlmMapError::Http` (via thiserror)
+- `From<anyhow::Error>` → `LlmMapError::Internal` (via thiserror)
+
+### Lessons Learned
+1. **thiserror 简化错误定义** - 使用 `#[from]` 属性自动实现 From trait
+2. **IntoResponse 需要返回 Response** - 最简单方式是组合 `(StatusCode, Json)` 然后调用 `.into_response()`
+3. **测试中类型转换** - 使用 `serde_json::Result<T>` 而非自定义 `Result<T>` 避免类型冲突
+4. **tracing-subscriber features** - 需要显式启用 `env-filter` 和 `time` features
+
+### Files Modified
+- `src/error.rs` - 从 23 行扩展到 165 行（包含 8 个测试）
+- `Cargo.toml` - 修正 tracing-subscriber features
+- `src/main.rs` - 修复重复 main 函数问题
+
+
+
+## Task 6 Completion - 2026-03-01T17:32:00+08:00
+
+### Completed Items
+- ✅ 创建 src/utils/logging.rs
+- ✅ 实现 init_logging() 函数
+- ✅ 在 src/utils/mod.rs 中声明模块
+- ✅ 更新 src/main.rs 调用 init_logging()
+- ✅ RUST_LOG=debug cargo run 验证通过
+- ✅ 日志输出包含时间戳、级别、模块名、行号
+
+### tracing-subscriber Configuration
+
+#### Required Features in Cargo.toml
+```toml
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "chrono"] }
+```
+
+**Key Features:**
+- `env-filter` - 支持 RUST_LOG 环境变量控制日志级别
+- `time` - 支持时间戳输出
+- `chrono` - 使用 chrono 库格式化时间（rfc_3339 需要）
+
+#### init_logging() Implementation
+```rust
+pub fn init_logging() {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)      // 显示模块路径
+                .with_line_number(true) // 显示行号
+                .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        )
+        .with(EnvFilter::from_default_env())
+        .init();
+}
+```
+
+### Log Output Format
+```
+2026-03-01T09:32:24.395116083Z  INFO  llm_map: 9: LLM Map service starting...
+2026-03-01T09:32:24.395166566Z  INFO  llm_map: 10: Version: 0.1.0
+```
+
+**Format Components:**
+1. ISO 8601 timestamp (UTC)
+2. Log level (INFO/DEBUG/WARN/ERROR)
+3. Module path (llm_map)
+4. Line number
+5. Log message
+
+### RUST_LOG Examples
+- `RUST_LOG=debug cargo run` - 显示 DEBUG 及以上级别
+- `RUST_LOG=info cargo run` - 显示 INFO 及以上级别
+- `RUST_LOG=warn cargo run` - 显示 WARN 及以上级别
+- `RUST_LOG=error cargo run` - 只显示 ERROR
+
+### Lessons Learned
+1. **Feature flags are critical** - tracing-subscriber 默认不启用 env-filter 和 time，必须显式声明
+2. **Avoid duplicate dependencies** - Cargo.toml 编辑时要小心重复行
+3. **UtcTime::rfc_3339()** - 需要 chrono feature 才能使用 ISO 8601 格式化
+4. **Module structure** - utils/mod.rs 需要声明 `pub mod logging` 并 re-export `pub use logging::init_logging`
+
+### Files Modified
+- `src/utils/logging.rs` - 新建（23 行）
+- `src/utils/mod.rs` - 添加 logging 模块声明
+- `src/main.rs` - 使用 crate::utils::init_logging() 替换内联配置
+- `Cargo.toml` - 添加 tracing-subscriber features: env-filter, time, chrono
+
+
+
+
+## Task 3 Completion - 2026-03-01T17:35:00+08:00
+
+### Completed Items
+- ✅ 实现 OneOrMany<T> 泛型结构支持 T 或 Vec<T> 反序列化
+- ✅ 实现 OneOrManyVisitor 自定义反序列化逻辑
+- ✅ 实现 one_or_many 辅助函数用于 #[serde(deserialize_with)]
+- ✅ 定义完整的配置结构体 (ProviderConfig, ModelEntry, ServerConfig, Config)
+- ✅ 实现 Config::from_file() 和 Config::validate() 方法
+- ✅ 编写 6 个单元测试验证 OneOrMany 和配置解析
+- ✅ cargo test config 通过（7 tests passed）
+- ✅ cargo check 通过无警告
+
+### OneOrMany 实现模式
+
+#### 核心设计
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub struct OneOrMany<T>(pub Vec<T>);
+
+impl<'de, T> Deserialize<'de> for OneOrMany<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let visitor = OneOrManyVisitor::new();
+        deserializer.deserialize_any(visitor).map(OneOrMany)
+    }
+}
+```
+
+#### OneOrManyVisitor 实现
+```rust
+struct OneOrManyVisitor<T> {
+    marker: PhantomData<T>,
+}
+
+impl<'de, T> Visitor<'de> for OneOrManyVisitor<T>
+where
+    T: Deserialize<'de>,
+{
+    type Value = Vec<T>;
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        // 单个字符串解析为 Vec 的单元素
+        let single: T = Deserialize::deserialize(de::value::StrDeserializer::new(value))?;
+        Ok(vec![single])
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        // 数组直接收集为 Vec
+        let mut vec = Vec::new();
+        while let Some(element) = seq.next_element()? {
+            vec.push(element);
+        }
+        Ok(vec)
+    }
+}
+```
+
+#### 辅助函数 (用于 serde 属性)
+```rust
+pub fn one_or_many<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    OneOrMany::<T>::deserialize(deserializer).map(|v| v.into_vec())
+}
+```
+
+### 配置结构体
+
+#### ProviderConfig
+```rust
+pub struct ProviderConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub endpoint: String,
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub adapter: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<HeaderEntry>,
+    #[serde(default)]
+    pub body: Vec<BodyEntry>,
+    #[serde(default)]
+    pub models: Vec<ModelConfig>,
+}
+```
+
+#### ModelEntry
+```rust
+pub struct ModelEntry {
+    pub id: String,
+    pub provider: String,
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub adapters: Vec<String>,
+}
+```
+
+#### ServerConfig (带默认值)
+```rust
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    pub port: u16,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            port: 5564,
+            proxy: None,
+        }
+    }
+}
+```
+
+### TOML 配置示例
+
+```toml
+[server]
+port = 5564
+
+[provider.qwen-code]
+base_url = "https://api.example.com"
+api_key = "sk-test-key"
+endpoint = "openai"
+adapter = "openai-to-qwen"  # 单个字符串
+
+[[model]]
+id = "coder-model"
+provider = "qwen-code"
+adapters = ["openai-to-qwen", "rate_limit"]  # 数组
+```
+
+### 测试结果
+
+```
+running 7 tests
+test config::tests::test_one_or_many_array ... ok
+test config::tests::test_config_with_multiple_adapters ... ok
+test config::tests::test_config_from_toml ... ok
+test config::tests::test_one_or_many_wrapper_array ... ok
+test config::tests::test_one_or_many_single_string ... ok
+test config::tests::test_one_or_many_wrapper_single ... ok
+test error::tests::test_config_error_creation ... ok
+
+test result: ok. 7 passed; 0 failed
+```
+
+### Lessons Learned
+
+1. **Visitor 模式是 serde 自定义反序列化的核心** - 通过实现 `Visitor` trait 的 `visit_str` 和 `visit_seq` 方法，可以灵活处理不同类型的输入
+
+2. **PhantomData 用于类型标记** - `OneOrManyVisitor<T>` 中的 `PhantomData<T>` 不占用内存，但告诉编译器这个 visitor 处理类型 T
+
+3. **deserialize_any vs deserialize_enum** - 使用 `deserialize_any` 允许 serde 自动判断输入是字符串还是数组，无需手动指定
+
+4. **#[serde(deserialize_with)]** - 对于已经是 `Vec<T>` 的字段，使用辅助函数 `one_or_many` 更简洁；对于需要包装的类型，直接实现 `Deserialize` trait
+
+5. **TOML 表与数组语法** - TOML 中 `[provider.name]` 是单个表，`[[model]]` 是数组中的表元素
+
+6. **依赖添加要完整** - 添加了 `toml = "0.8"` 依赖才能解析 TOML 配置文件
+
+7. **cargo test config 过滤** - 使用 `cargo test config` 只运行包含 "config" 的测试，加快验证速度
+
+### Files Modified
+- `src/config/mod.rs` - 从空文件扩展到 375 行（包含完整配置结构和 6 个测试）
+- `Cargo.toml` - 添加 `toml = "0.8"` 依赖
+
+
+## Task 4 Completion - 2026-03-01T17:35:00+08:00
+
+### Completed Items
+- ✅ 定义 Newtype 类型：ApiKey, ModelId, ProviderId, AdapterId, RequestId
+- ✅ 为所有 Newtype 实现 Deref<Target=str>, AsRef<str>, Display, Clone
+- ✅ 实现 ApiKey.mask() 方法（隐藏敏感信息）
+- ✅ 定义 Transform 类型：RequestTransform, ResponseTransform, StreamChunkTransform
+- ✅ 编写 15 个单元测试验证类型功能
+- ✅ cargo test types 通过（15 tests passed）
+
+### Newtype Pattern Implementation
+
+#### ApiKey with mask()
+```rust
+#[derive(Debug, Clone)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    /// 隐藏敏感信息：`sk-verylongkey12345` → `sk-ve****2345`
+    pub fn mask(&self) -> String {
+        let key = &self.0;
+        if key.len() < 8 {
+            return "***".to_string();
+        }
+        format!("{}****{}", &key[..5], &key[key.len() - 4..])
+    }
+}
+```
+
+#### Common Trait Implementations
+```rust
+impl Deref for ApiKey {
+    type Target = str;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl AsRef<str> for ApiKey {
+    fn as_ref(&self) -> &str { &self.0 }
+}
+
+impl Display for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.mask())  // Display 自动使用 mask()
+    }
+}
+```
+
+### Transform Types
+
+#### RequestTransform
+```rust
+pub struct RequestTransform {
+    pub body: serde_json::Value,
+    pub url: Option<String>,
+    pub headers: Option<http::HeaderMap>,
+}
+```
+
+#### ResponseTransform
+```rust
+pub struct ResponseTransform {
+    pub body: serde_json::Value,
+    pub status: Option<http::StatusCode>,
+    pub headers: Option<http::HeaderMap>,
+}
+```
+
+#### StreamChunkTransform
+```rust
+pub struct StreamChunkTransform {
+    pub data: serde_json::Value,
+    pub event: Option<String>,
+}
+```
+
+### Builder Pattern for Transform Types
+```rust
+impl RequestTransform {
+    pub fn new(body: serde_json::Value) -> Self {
+        Self { body, url: None, headers: None }
+    }
+
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        self.url = Some(url.into());
+        self
+    }
+
+    pub fn with_headers(mut self, headers: http::HeaderMap) -> Self {
+        self.headers = Some(headers);
+        self
+    }
+}
+```
+
+### Test Coverage (15 tests)
+1. `test_api_key_new` - 创建 ApiKey
+2. `test_api_key_mask_long` - 长密钥 masking (sk-verylongkey12345 → sk-ve****2345)
+3. `test_api_key_mask_short` - 短密钥 masking (short → ***)
+4. `test_api_key_display` - Display trait 使用 mask()
+5. `test_model_id` - ModelId 基本功能
+6. `test_provider_id` - ProviderId 基本功能
+7. `test_adapter_id` - AdapterId 基本功能
+8. `test_request_id` - RequestId 基本功能
+9. `test_request_transform_new` - RequestTransform 创建
+10. `test_request_transform_with_url` - with_url builder
+11. `test_request_transform_with_headers` - with_headers builder
+12. `test_response_transform_new` - ResponseTransform 创建
+13. `test_response_transform_with_status` - with_status builder
+14. `test_stream_chunk_transform_new` - StreamChunkTransform 创建
+15. `test_stream_chunk_transform_with_event` - with_event builder
+
+### Lessons Learned
+
+1. **Newtype 模式优势**
+   - 类型安全：防止混淆不同类型的 ID（ApiKey vs ModelId）
+   - 封装：可以在内部改变表示而不影响外部 API
+   - 实现特定方法：如 ApiKey.mask() 只能用于 ApiKey
+
+2. **Deref + AsRef + Display 组合**
+   - `Deref<Target=str>` - 允许像 &str 一样使用（如 `&*api_key`）
+   - `AsRef<str>` - 允许作为字符串引用传递（如 `fn foo(s: impl AsRef<str>)`）
+   - `Display` - 允许 `format!("{}", value)`，ApiKey 的 Display 自动使用 mask()
+
+3. **ApiKey.mask() 实现细节**
+   - 长度 < 8：返回 `***`
+   - 长度 >= 8：返回 `前 5 个字符 + **** + 后 4 个字符`
+   - 示例：`sk-verylongkey12345` → `sk-ve****2345`
+
+4. **Builder Pattern 提升可用性**
+   - `RequestTransform::new(body).with_url(url).with_headers(headers)`
+   - 链式调用，代码更清晰
+   - 使用 `impl Into<String>` 允许传入 &str 或 String
+
+5. **Transform 类型设计**
+   - 使用 `Option<T>` 表示可选修改
+   - `None` = 不修改原值
+   - `Some(value)` = 应用修改
+   - 与洋葱模型执行器配合使用
+
+### Files Modified
+- `src/types/mod.rs` - 从 1 行扩展到 367 行（包含 15 个测试）
+
+### Verification
+```bash
+cargo test types
+# running 15 tests
+# test types::tests::test_adapter_id ... ok
+# test types::tests::test_api_key_display ... ok
+# ... (15 passed)
+```

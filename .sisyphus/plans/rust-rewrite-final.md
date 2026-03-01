@@ -352,7 +352,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 2. 错误类型定义 (thiserror)
+- [x] 2. 错误类型定义 (thiserror)
 
   **做什么**:
   - 创建 `src/error.rs`
@@ -392,7 +392,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 3. 配置结构设计 (OneOrMany)
+- [x] 3. 配置结构设计 (OneOrMany)
 
   **做什么**:
   - 创建 `src/config/mod.rs`
@@ -432,7 +432,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 4. 类型定义 (Newtype + Transform)
+- [x] 4. 类型定义 (Newtype + Transform)
 
   **做什么**:
   - 创建 `src/types/mod.rs`
@@ -512,7 +512,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 6. tracing 日志配置
+- [x] 6. tracing 日志配置
 
   **做什么**:
   - 创建 `src/utils/logging.rs`
