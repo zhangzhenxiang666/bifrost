@@ -1247,3 +1247,166 @@ cargo check
 # Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.89s
 ```
 
+## Task 16 Completion - Anthropic Compatible Route - 2026-03-01
+
+### Completed Items
+- ✅ 创建 `src/routes/anthropic.rs`
+- ✅ 实现 `messages` 处理函数
+- ✅ 实现 `parse_model()` 解析 `provider@model` 格式
+- ✅ 根据 `stream: bool` 返回 `GatewayResponse::Json` 或 `GatewayResponse::Sse`
+- ✅ 更新 `src/routes/mod.rs` 添加 anthropic 模块
+- ✅ 编写 10 个单元测试（4 个解析测试 + 6 个处理器测试）
+- ✅ `cargo test routes` 通过（20 tests passed: 10 openai + 10 anthropic）
+- ✅ `cargo check` 通过
+
+### Key Implementation Details
+
+#### 1. messages Handler
+```rust
+#[axum::debug_handler]
+pub async fn messages(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<GatewayResponse> {
+    // Extract stream flag (default to false)
+    let is_stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Extract model field
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| LlmMapError::Validation(
+            "Missing required field: model".to_string()
+        ))?;
+
+    // Parse provider@model format
+    let (provider_id, _model_name) = parse_model(model)?;
+
+    // Build adapter chain for the provider
+    let executor = state.registry.build_executor(provider_id)?;
+
+    // Execute the request through the adapter chain
+    let headers = http::HeaderMap::new();
+    let transform = executor.execute_request(body.clone(), &headers).await?;
+
+    let response_body = transform.body;
+
+    // Return appropriate response type based on stream flag
+    Ok(if is_stream {
+        GatewayResponse::Sse(convert_to_sse(response_body))
+    } else {
+        GatewayResponse::Json(Json(response_body))
+    })
+}
+```
+
+#### 2. parse_model Function
+使用 `split_once('@')` 简洁地分割字符串，与 OpenAI 路由共享相同实现。
+
+#### 3. AppState Re-export
+```rust
+pub use super::openai::AppState;
+```
+避免重复定义，保持代码 DRY。
+
+### Test Coverage (10 tests)
+
+**parse_model 测试**:
+1. `test_parse_model_with_provider` - 正常格式 "qwen-code@claude-3"
+2. `test_parse_model_without_provider` - 缺少 @ 返回错误
+3. `test_parse_model_empty_string` - 空字符串错误
+4. `test_parse_model_multiple_at_signs` - 多个 @ 只分割第一个
+
+**messages handler 测试**:
+5. `test_messages_non_stream_request` - 非流式返回 JSON
+6. `test_messages_stream_request` - 流式返回 SSE (text/event-stream)
+7. `test_messages_missing_model` - 缺少 model 返回 400
+8. `test_messages_invalid_model_format` - 无效格式返回 400
+9. `test_messages_provider_not_found` - Provider 不存在返回 502
+10. `test_messages_default_stream_false` - 默认 stream=false
+
+### Design Decisions
+
+#### 1. 统一 SSE 处理
+与 OpenAI 路由相同，根据 `stream: bool` 返回不同类型：
+- `stream: false` → `GatewayResponse::Json`
+- `stream: true` → `GatewayResponse::Sse`
+
+#### 2. 代码复用
+- `parse_model()` 函数实现与 OpenAI 路由完全相同
+- `AppState` 从 `openai` 模块 re-export
+- `convert_to_sse()` 工具函数复用
+
+#### 3. Anthropic 端点
+- 路径：`/v1/messages`（Anthropic 标准端点）
+- 方法：POST
+- 响应格式：Anthropic 兼容（实际由适配器转换）
+
+### Lessons Learned
+
+1. **代码复用的重要性**
+   - `parse_model()` 函数可以提取到共享模块避免重复
+   - `AppState` re-export 避免重复定义
+   - 未来可以考虑提取公共的路由辅助函数
+
+2. **axum::debug_handler 需要 macros feature**
+   - 必须在 `Cargo.toml` 中启用 `axum = { ..., features = ["macros"] }`
+   - 提供更好的编译时错误信息
+
+3. **SSE content-type 验证**
+   - SSE 响应的 `Content-Type` 是 `text/event-stream`
+   - 测试中通过 `response.headers().get("content-type")` 验证
+
+4. **错误状态码一致性**
+   - `LlmMapError::Validation` → 400 BAD_REQUEST
+   - `LlmMapError::Provider` → 502 BAD_GATEWAY
+   - `LlmMapError::Adapter` → 500 INTERNAL_SERVER_ERROR
+
+5. **测试代码组织**
+   - 使用辅助函数 `create_test_config()` 和 `create_test_state()`
+   - 测试分组：parse_model 测试 + handler 测试
+   - 使用 `tower::util::ServiceExt::oneshot()` 发送测试请求
+
+### Files Modified
+- `src/routes/anthropic.rs` - 新建（341 行，包含 10 个测试）
+- `src/routes/mod.rs` - 添加 `pub mod anthropic;` 和 re-exports
+
+### Verification
+```bash
+cargo test routes
+# running 20 tests
+# test routes::anthropic::tests::test_parse_model_empty_string ... ok
+# test routes::anthropic::tests::test_parse_model_multiple_at_signs ... ok
+# test routes::anthropic::tests::test_parse_model_with_provider ... ok
+# test routes::anthropic::tests::test_parse_model_without_provider ... ok
+# test routes::anthropic::tests::test_messages_default_stream_false ... ok
+# test routes::anthropic::tests::test_messages_invalid_model_format ... ok
+# test routes::anthropic::tests::test_messages_missing_model ... ok
+# test routes::anthropic::tests::test_messages_non_stream_request ... ok
+# test routes::anthropic::tests::test_messages_provider_not_found ... ok
+# test routes::anthropic::tests::test_messages_stream_request ... ok
+# test routes::openai::tests::test_chat_completions_default_stream_false ... ok
+# test routes::openai::tests::test_chat_completions_invalid_model_format ... ok
+# test routes::openai::tests::test_chat_completions_missing_model ... ok
+# test routes::openai::tests::test_chat_completions_non_stream_request ... ok
+# test routes::openai::tests::test_chat_completions_provider_not_found ... ok
+# test routes::openai::tests::test_chat_completions_stream_request ... ok
+# test routes::openai::tests::test_chat_completions_non_stream_request ... ok
+# test routes::openai::tests::test_chat_completions_missing_model ... ok
+# test routes::openai::tests::test_chat_completions_invalid_model_format ... ok
+# test routes::openai::tests::test_chat_completions_default_stream_false ... ok
+#
+# test result: ok. 20 passed; 0 failed
+
+cargo check
+# Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.28s
+```
+
+### Next Steps
+- T17: 健康检查和模型列表路由
+- T18: CORS 和中间件配置
+- T19: main.rs 应用组装
+

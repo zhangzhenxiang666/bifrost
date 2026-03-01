@@ -7,12 +7,14 @@ use axum::{
     extract::State,
     Json,
 };
+use futures::stream::StreamExt;
+use http::header::{AUTHORIZATION, CONTENT_TYPE};
+use http::HeaderMap;
 use serde_json::Value;
 
 use crate::error::{LlmMapError, Result};
 use crate::provider::registry::ProviderRegistry;
 use crate::types::response::GatewayResponse;
-use crate::utils::sse::convert_to_sse;
 
 /// Application state for route handlers
 #[derive(Clone)]
@@ -52,8 +54,8 @@ fn parse_model(model: &str) -> Result<(&str, &str)> {
 ///
 /// This handler accepts POST requests to `/v1/chat/completions` and:
 /// - Parses the `model` field in `provider@model` format
-/// - Builds an adapter chain for the specified provider
-/// - Executes the request through the adapter chain
+/// - Routes the request to the specified provider
+/// - Executes the HTTP request to the upstream provider
 /// - Returns either JSON or SSE stream based on the `stream` field
 ///
 /// # Arguments
@@ -67,7 +69,7 @@ fn parse_model(model: &str) -> Result<(&str, &str)> {
 /// # Errors
 /// * `400 Bad Request` - Invalid model format or missing fields
 /// * `404 Not Found` - Provider not found in registry
-/// * `500 Internal Server Error` - Adapter execution failed
+/// * `500 Internal Server Error` - HTTP request failed
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<AppState>,
@@ -90,23 +92,71 @@ pub async fn chat_completions(
     // Parse provider@model format
     let (provider_id, _model_name) = parse_model(model)?;
 
-    // Build adapter chain for the provider
-    let executor = state.registry.build_executor(provider_id)?;
+    // Get provider info from registry
+    let provider = state.registry.get(provider_id)
+        .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
 
-    // Execute the request through the adapter chain
-    let headers = http::HeaderMap::new();
-    let transform = executor.execute_request(body.clone(), &headers).await?;
+    // Build the request URL: base_url + endpoint path
+    let endpoint_path = match provider.config().endpoint {
+        crate::config::Endpoint::Openai => "/v1/chat/completions",
+        crate::config::Endpoint::Anthropic => "/v1/messages",
+        crate::config::Endpoint::Qwen => "/v1/chat/completions",
+        crate::config::Endpoint::Other => "/v1/chat/completions",
+    };
+    let url = format!("{}{}", provider.base_url(), endpoint_path);
 
-    // For now, we just echo back the transformed request as response
-    // In a real implementation, this would make an HTTP call to the upstream provider
-    let response_body = transform.body;
+    // Build headers with authentication
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        format!("Bearer {}", provider.api_key()).parse().unwrap(),
+    );
+    headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
 
-    // Return appropriate response type based on stream flag
-    Ok(if is_stream {
-        GatewayResponse::Sse(convert_to_sse(response_body))
+    // Add custom headers from provider config
+    for header_entry in &provider.config().headers {
+        if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>() {
+            if let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>() {
+                headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    // Get HTTP client from registry
+    let client = state.registry.http_client();
+
+    // Execute request based on stream flag
+    if is_stream {
+        // Streaming: use send_sse_stream
+        let stream = client.send_sse_stream(&url, body.clone(), &headers)
+            .await
+            .map_err(|e| LlmMapError::Http(e))?;
+
+        // Convert the SSE stream to GatewayResponse::Sse
+        let sse_stream = stream
+            .map(|event_result| {
+                match event_result {
+                    Ok(event) => Ok(axum::response::sse::Event::default().data(event.data)),
+                    Err(_) => Ok(axum::response::sse::Event::default().data("[ERROR]")),
+                }
+            });
+
+        Ok(GatewayResponse::Sse(
+            axum::response::sse::Sse::new(Box::pin(sse_stream))
+        ))
     } else {
-        GatewayResponse::Json(Json(response_body))
-    })
+        // Non-streaming: use send_request
+        let response = client.send_request(&url, body.clone(), &headers)
+            .await
+            .map_err(|e| LlmMapError::Http(e))?;
+
+        // Parse response JSON
+        let response_json: Value = response.json().await
+            .map_err(|e| LlmMapError::Internal(e.into()))?;
+
+        // Return GatewayResponse::Json with the response
+        Ok(GatewayResponse::Json(axum::Json(response_json)))
+    }
 }
 
 #[cfg(test)]
@@ -119,14 +169,16 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use tower::util::ServiceExt;
+    use wiremock::matchers::{method, path, header};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Create a test configuration with a single provider
-    fn create_test_config() -> Config {
+    fn create_test_config(mock_server_uri: &str) -> Config {
         let mut provider = HashMap::new();
         provider.insert(
             "test-provider".to_string(),
             ProviderConfig {
-                base_url: "https://api.test.com".to_string(),
+                base_url: mock_server_uri.to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::Openai,
                 adapter: vec![],
@@ -142,9 +194,9 @@ mod tests {
         }
     }
 
-    /// Create test app state
-    fn create_test_state() -> AppState {
-        let config = create_test_config();
+    /// Create test app state with mock server URI
+    fn create_test_state(mock_server_uri: &str) -> AppState {
+        let config = create_test_config(mock_server_uri);
         let registry = ProviderRegistry::from_config(&config);
         AppState { registry }
     }
@@ -189,7 +241,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_non_stream_request() {
-        let state = create_test_state();
+        // Start a mock server
+        let mock_server = MockServer::start().await;
+        
+        // Mock the upstream response
+        let expected_response = json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello from mock server"
+                }
+            }]
+        });
+        
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&expected_response))
+            .mount(&mock_server)
+            .await;
+
+        let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
@@ -216,7 +291,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_stream_request() {
-        let state = create_test_state();
+        // Start a mock server
+        let mock_server = MockServer::start().await;
+        
+        // Mock SSE response for streaming
+        let sse_response = "data: {\"id\":\"chatcmpl-123\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n
+data: {\"id\":\"chatcmpl-123\",\"choices\":[{\"delta\":{\"content\":\" World\"}}]}\n\n
+data: [DONE]\n\n";
+        
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(sse_response)
+                .insert_header("content-type", "text/event-stream"))
+            .mount(&mock_server)
+            .await;
+
+        let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
@@ -247,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_missing_model() {
-        let state = create_test_state();
+        let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
@@ -272,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_invalid_model_format() {
-        let state = create_test_state();
+        let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
@@ -298,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_provider_not_found() {
-        let state = create_test_state();
+        let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
@@ -324,7 +416,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_default_stream_false() {
-        let state = create_test_state();
+        // Start a mock server
+        let mock_server = MockServer::start().await;
+        
+        // Mock the upstream response
+        let expected_response = json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello from mock server"
+                }
+            }]
+        });
+        
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&expected_response))
+            .mount(&mock_server)
+            .await;
+
+        let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
             .route("/v1/chat/completions", axum::routing::post(chat_completions))
             .with_state(state);
