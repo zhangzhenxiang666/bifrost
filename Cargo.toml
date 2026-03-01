@@ -34,3 +34,6 @@ tokio-stream = "0.1"
 
 # TOML support
 toml = "0.8"
+
+# Testing
+tempfile = "3"

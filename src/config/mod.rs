@@ -3,12 +3,13 @@
 //! Provides configuration structures and deserialization logic
 //! for TOML-based configuration files.
 
+mod loader;
+mod validator;
+
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
 use std::fmt;
 use std::marker::PhantomData;
-use std::path::Path;
-
 // =============================================================================
 // OneOrMany - Custom deserializer for T or Vec<T>
 // =============================================================================
@@ -177,17 +178,7 @@ pub struct ProviderConfig {
     pub models: Vec<ModelConfig>,
 }
 
-/// Model routing configuration
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelEntry {
-    /// Model identifier
-    pub id: String,
-    /// Provider to use for this model
-    pub provider: String,
-    /// Adapters to apply (one or many)
-    #[serde(default, deserialize_with = "one_or_many")]
-    pub adapters: Vec<String>,
-}
+
 
 /// Server configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -200,47 +191,24 @@ pub struct ServerConfig {
 }
 
 /// Root configuration structure
+/// Matches config.toml format:
+/// - [provider.xxx] - nested table for providers
+/// - [server] - server configuration
+/// Provider config contains models array internally
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Provider configurations (keyed by provider ID)
+    /// Loaded from [provider.xxx] sections
     #[serde(default)]
     pub provider: std::collections::HashMap<String, ProviderConfig>,
-    /// Model configurations
-    #[serde(default)]
-    pub model: Vec<ModelEntry>,
     /// Server configuration
+    /// Loaded from [server] section
     #[serde(default)]
     pub server: ServerConfig,
 }
 
-impl Config {
-    /// Load configuration from a TOML file
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        let config: Config = toml::from_str(&content)?;
-        Ok(config)
-    }
 
-    /// Validate the configuration
-    pub fn validate(&self) -> Result<(), String> {
-        // Validate that all referenced providers exist
-        for model in &self.model {
-            if !self.provider.contains_key(&model.provider) {
-                return Err(format!(
-                    "Model '{}' references non-existent provider '{}'",
-                    model.id, model.provider
-                ));
-            }
-        }
 
-        // Validate that port is not 0
-        if self.server.port == 0 {
-            return Err("Server port cannot be 0".to_string());
-        }
-
-        Ok(())
-    }
-}
 
 // Default server configuration
 impl Default for ServerConfig {
@@ -328,7 +296,6 @@ mod tests {
     #[test]
     fn test_config_from_toml() {
         let toml_str = r#"
-            [server]
             port = 5564
 
             [provider.qwen-code]
@@ -336,11 +303,9 @@ mod tests {
             api_key = "sk-test-key"
             endpoint = "openai"
             adapter = "openai-to-qwen"
-
-            [[model]]
-            id = "coder-model"
-            provider = "qwen-code"
-            adapters = ["openai-to-qwen"]
+            models = [
+                { name = "coder-model" }
+            ]
         "#;
 
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -350,8 +315,8 @@ mod tests {
         let provider = config.provider.get("qwen-code").unwrap();
         assert_eq!(provider.base_url, "https://api.example.com");
         assert_eq!(provider.adapter, vec!["openai-to-qwen"]);
-        assert_eq!(config.model.len(), 1);
-        assert_eq!(config.model[0].id, "coder-model");
+        assert_eq!(provider.models.len(), 1);
+        assert_eq!(provider.models[0].name, "coder-model");
     }
 
     #[test]

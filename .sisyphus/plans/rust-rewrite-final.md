@@ -473,7 +473,7 @@ Wave FINAL (独立审查 - 4 任务并行):
 
 ---
 
-- [ ] 5. 配置加载和验证
+- [x] 5. 配置加载和验证
 
   **做什么**:
   - 创建 `src/config/loader.rs` 和 `validator.rs`
