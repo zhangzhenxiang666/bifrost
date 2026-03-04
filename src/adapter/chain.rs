@@ -6,10 +6,12 @@
 //! - Request flow: Adapter A → Adapter B → Adapter C → Upstream
 //! - Response flow: Upstream → Adapter C → Adapter B → Adapter A → Client
 
+use http::HeaderMap;
+
 use crate::adapter::Adapter;
 use crate::config::ProviderConfig;
 use crate::error::{LlmMapError, Result};
-use crate::types::{RequestTransform, ResponseTransform};
+use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 
 /// Executor that manages the adapter chain in an onion architecture.
 ///
@@ -33,10 +35,9 @@ impl OnionExecutor {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use llm_map::adapter::OnionExecutor;
-    /// use llm_map::config::ProviderConfig;
-    /// # use llm_map::adapter::Adapter;
-    /// # use llm_map::error::LlmMapError;
+    /// use llm_map::adapter::{Adapter, OnionExecutor};
+    /// use llm_map::config::{Endpoint, ProviderConfig};
+    /// use llm_map::error::LlmMapError;
     /// # struct MyAdapter;
     /// # #[async_trait::async_trait]
     /// # impl Adapter for MyAdapter {
@@ -45,23 +46,28 @@ impl OnionExecutor {
     /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<llm_map::types::ResponseTransform, Self::Error> { Ok(llm_map::types::ResponseTransform::new(body)) }
     /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value) -> Result<llm_map::types::StreamChunkTransform, Self::Error> { Ok(llm_map::types::StreamChunkTransform::new(chunk)) }
     /// # }
-    ///
     /// # let provider_config = ProviderConfig {
     /// #     base_url: "https://api.example.com".to_string(),
     /// #     api_key: "test-key".to_string(),
-    /// #     endpoint: "openai".to_string(),
+    /// #     endpoint: Endpoint::OpenAI,
     /// #     adapter: vec![],
-    /// #     headers: vec![],
-    /// #     body: vec![],
-    /// #     models: vec![],
+    /// #     headers: None,
+    /// #     body: None,
+    /// #     models: None,
     /// # };
     /// let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
     ///     Box::new(MyAdapter),
     /// ];
     /// let executor = OnionExecutor::new(adapters, provider_config);
     /// ```
-    pub fn new(adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>, provider_config: ProviderConfig) -> Self {
-        Self { adapters, provider_config }
+    pub fn new(
+        adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>,
+        provider_config: ProviderConfig,
+    ) -> Self {
+        Self {
+            adapters,
+            provider_config,
+        }
     }
 
     /// Execute the request transformation through the adapter chain.
@@ -91,12 +97,12 @@ impl OnionExecutor {
     ) -> Result<RequestTransform> {
         let mut current_body = body;
         let mut current_url = self.provider_config.base_url.clone();
-        let mut current_headers = headers.clone();
+        let mut current_headers = HeaderMap::new();
 
         // Forward execution: A → B → C
         for adapter in &self.adapters {
             let transform = adapter
-                .transform_request(current_body, &self.provider_config, &current_headers)
+                .transform_request(current_body, &self.provider_config, headers)
                 .await
                 .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
 
@@ -105,7 +111,7 @@ impl OnionExecutor {
                 current_url = new_url;
             }
             if let Some(new_headers) = transform.headers {
-                current_headers = new_headers;
+                current_headers.extend(new_headers);
             }
         }
 
@@ -161,7 +167,7 @@ impl OnionExecutor {
         // Reverse execution: C → B → A
         for adapter in self.adapters.iter().rev() {
             let transform = adapter
-                .transform_response(current_body, current_status, &current_headers)
+                .transform_response(current_body, current_status, upstream_headers)
                 .await
                 .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
 
@@ -184,6 +190,25 @@ impl OnionExecutor {
             .with_headers(current_headers))
     }
 
+    pub async fn execute_stream_chunk(
+        &self,
+        chunk: serde_json::Value,
+    ) -> Result<StreamChunkTransform> {
+        let mut current_chunk = chunk;
+        let mut current_event = None;
+        for adapter in self.adapters.iter().rev() {
+            let transform = adapter
+                .transform_stream_chunk(current_chunk)
+                .await
+                .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
+            current_chunk = transform.data;
+            current_event = transform.event;
+        }
+        let mut res = StreamChunkTransform::new(current_chunk);
+        res.event = current_event;
+        Ok(res)
+    }
+
     /// Get the number of adapters in the chain.
     pub fn adapter_count(&self) -> usize {
         self.adapters.len()
@@ -202,11 +227,11 @@ mod tests {
         ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: crate::config::Endpoint::Openai,
+            endpoint: crate::config::Endpoint::OpenAI,
             adapter: vec![],
-            headers: vec![],
-            body: vec![],
-            models: vec![],
+            headers: None,
+            body: None,
+            models: None,
         }
     }
 
@@ -266,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn test_request_execution_order() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        
+
         let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
             Box::new(MockAdapter::new("A", log.clone())),
             Box::new(MockAdapter::new("B", log.clone())),
@@ -276,31 +301,31 @@ mod tests {
         let provider_config = ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: crate::config::Endpoint::Openai,
+            endpoint: crate::config::Endpoint::OpenAI,
             adapter: vec![],
-            headers: vec![],
-            body: vec![],
-            models: vec![],
+            headers: None,
+            body: None,
+            models: None,
         };
         let executor = OnionExecutor::new(adapters, provider_config);
         let body = serde_json::json!({"test": "data"});
         let headers = http::HeaderMap::new();
 
-        executor
-            .execute_request(body, &headers)
-            .await
-            .unwrap();
+        executor.execute_request(body, &headers).await.unwrap();
 
         let execution_order = log.lock().await;
-        
+
         // Assert forward execution: A → B → C
-        assert_eq!(*execution_order, vec!["A_request", "B_request", "C_request"]);
+        assert_eq!(
+            *execution_order,
+            vec!["A_request", "B_request", "C_request"]
+        );
     }
 
     #[tokio::test]
     async fn test_response_execution_order() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        
+
         let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
             Box::new(MockAdapter::new("A", log.clone())),
             Box::new(MockAdapter::new("B", log.clone())),
@@ -318,22 +343,24 @@ mod tests {
             .unwrap();
 
         let execution_order = log.lock().await;
-        
+
         // Assert reverse execution: C → B → A
-        assert_eq!(*execution_order, vec!["C_response", "B_response", "A_response"]);
+        assert_eq!(
+            *execution_order,
+            vec!["C_response", "B_response", "A_response"]
+        );
     }
 
     #[tokio::test]
     async fn test_header_passthrough() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        
-        let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
-            Box::new(MockAdapter::new("A", log.clone())),
-        ];
+
+        let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> =
+            vec![Box::new(MockAdapter::new("A", log.clone()))];
 
         let executor = OnionExecutor::new(adapters, test_provider_config());
         let body = serde_json::json!({"result": "ok"});
-        
+
         // Create upstream headers with various types
         let mut upstream_headers = http::HeaderMap::new();
         upstream_headers.insert("content-type", "application/json".parse().unwrap());
@@ -353,7 +380,10 @@ mod tests {
         let response_headers = result.headers.unwrap();
 
         // Assert passthrough headers are present
-        assert_eq!(response_headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            response_headers.get("content-type").unwrap(),
+            "application/json"
+        );
         assert_eq!(response_headers.get("x-ratelimit-limit").unwrap(), "100");
         assert_eq!(response_headers.get("x-ratelimit-remaining").unwrap(), "50");
         assert_eq!(response_headers.get("x-ratelimit-reset").unwrap(), "3600");
@@ -368,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_onion_flow() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        
+
         let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
             Box::new(MockAdapter::new("A", log.clone())),
             Box::new(MockAdapter::new("B", log.clone())),
@@ -395,7 +425,7 @@ mod tests {
             .unwrap();
 
         let execution_order = log.lock().await;
-        
+
         // Assert complete onion flow
         assert_eq!(
             *execution_order,
@@ -413,15 +443,15 @@ mod tests {
     #[tokio::test]
     async fn test_empty_adapter_chain() {
         let executor = OnionExecutor::new(vec![], test_provider_config());
-        
+
         let request_body = serde_json::json!({"test": "data"});
         let request_headers = http::HeaderMap::new();
-        
+
         let result = executor
             .execute_request(request_body.clone(), &request_headers)
             .await
             .unwrap();
-        
+
         assert_eq!(result.body, request_body);
         assert_eq!(result.url, Some("https://example.com".to_string()));
     }
@@ -429,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_adapter_count() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        
+
         let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
             Box::new(MockAdapter::new("A", log.clone())),
             Box::new(MockAdapter::new("B", log.clone())),

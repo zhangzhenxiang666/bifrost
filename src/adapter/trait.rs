@@ -3,10 +3,9 @@
 //! This module defines the core [`Adapter`] trait that all LLM provider adapters must implement.
 //! The trait uses [`macro@async_trait`] to allow async methods in traits.
 
-use async_trait::async_trait;
 use crate::config::ProviderConfig;
 use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
-
+use async_trait::async_trait;
 
 /// Core trait for LLM provider adapters.
 ///
@@ -22,14 +21,14 @@ use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 /// ```rust,no_run
 /// use async_trait::async_trait;
 /// use llm_map::adapter::Adapter;
-/// use llm_map::config::ProviderConfig;
+/// use llm_map::config::{Endpoint, ProviderConfig};
 /// use llm_map::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
 ///
 /// struct MyAdapter;
 ///
 /// #[async_trait]
 /// impl Adapter for MyAdapter {
-///     type Error = Box<dyn std::error::Error + Send + Sync>;
+///     type Error = llm_map::error::LlmMapError;
 ///
 ///     async fn transform_request(
 ///         &self,

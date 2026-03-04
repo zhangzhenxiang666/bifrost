@@ -103,9 +103,9 @@ mod tests {
             api_key: api_key.to_string(),
             endpoint,
             adapter: adapters.into_iter().map(String::from).collect(),
-            headers: Vec::new(),
-            body: Vec::new(),
-            models: Vec::new(),
+            headers: None,
+            body: None,
+            models: None,
         }
     }
 
@@ -117,7 +117,7 @@ mod tests {
             create_test_provider(
                 "https://api.example.com/v1",
                 "sk-test-key",
-                crate::config::Endpoint::Openai,
+                crate::config::Endpoint::OpenAI,
                 vec!["openai-to-qwen"],
             ),
         );
@@ -147,7 +147,7 @@ mod tests {
             create_test_provider(
                 "https://api.test.com",
                 "",
-                crate::config::Endpoint::Openai,
+                crate::config::Endpoint::OpenAI,
                 vec![],
             ),
         );
@@ -171,7 +171,7 @@ mod tests {
         let mut provider_map = HashMap::new();
         provider_map.insert(
             "test".to_string(),
-            create_test_provider("", "sk-key", crate::config::Endpoint::Openai, vec![]),
+            create_test_provider("", "sk-key", crate::config::Endpoint::OpenAI, vec![]),
         );
 
         let config = Config {
@@ -196,7 +196,7 @@ mod tests {
             create_test_provider(
                 "not-a-valid-url",
                 "sk-key",
-                crate::config::Endpoint::Openai,
+                crate::config::Endpoint::OpenAI,
                 vec![],
             ),
         );
@@ -244,7 +244,7 @@ mod tests {
             create_test_provider(
                 "https://api.test.com/v1",
                 "sk-key",
-                crate::config::Endpoint::Openai,
+                crate::config::Endpoint::OpenAI,
                 vec![],
             ),
         );
@@ -269,7 +269,7 @@ mod tests {
             create_test_provider(
                 "http://localhost:8080",
                 "sk-key",
-                crate::config::Endpoint::Openai,
+                crate::config::Endpoint::OpenAI,
                 vec![],
             ),
         );

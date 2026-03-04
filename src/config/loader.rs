@@ -76,8 +76,8 @@ mod tests {
         assert!(config.provider.contains_key("qwen-code"));
         let provider = config.provider.get("qwen-code").unwrap();
         assert_eq!(provider.adapter, vec!["openai-to-qwen"]);
-        assert_eq!(provider.models.len(), 1);
-        assert_eq!(provider.models[0].name, "coder-model");
+        assert_eq!(provider.models.as_ref().unwrap().len(), 1);
+        assert_eq!(provider.models.as_ref().unwrap()[0].name, "coder-model");
     }
 
     #[test]
@@ -136,7 +136,6 @@ mod tests {
 
         let provider = config.provider.get("test").unwrap();
         assert_eq!(provider.adapter, vec!["adapter1", "adapter2"]);
-        assert_eq!(provider.models.len(), 1);
+        assert_eq!(provider.models.as_ref().unwrap().len(), 1);
     }
 }
-

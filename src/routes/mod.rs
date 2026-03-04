@@ -1,7 +1,7 @@
 //! Routes module for HTTP endpoints
 
+pub mod handler;
 pub mod openai;
-pub mod anthropic;
 
-pub use anthropic::messages;
-pub use openai::{chat_completions, AppState};
+pub use handler::AppState;
+pub use openai::chat_completions;

@@ -5,10 +5,14 @@
 
 pub mod builtin;
 pub mod chain;
-pub mod context;
 pub mod r#trait;
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;
-pub use context::{AdapterContext, RequestContext, ResponseContext};
 pub use r#trait::Adapter;
+
+pub static X_API_KEY: http::HeaderName = http::header::HeaderName::from_static("x-api-key");
+pub static ANTHROPIC_VERSION: (http::HeaderName, http::header::HeaderValue) = (
+    http::header::HeaderName::from_static("anthropic-version"),
+    http::header::HeaderValue::from_static("2023-06-01"),
+);

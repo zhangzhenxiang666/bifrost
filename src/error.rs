@@ -1,12 +1,12 @@
 //! Error types for LLM Map service
 
-use thiserror::Error;
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
+use thiserror::Error;
 
 /// Main error type for LLM Map service
 #[derive(Error, Debug)]
@@ -68,7 +68,7 @@ impl IntoResponse for LlmMapError {
     fn into_response(self) -> Response {
         let status = self.status_code();
         let code = self.error_code();
-        
+
         let body = Json(json!({
             "error": {
                 "code": code,
@@ -86,8 +86,6 @@ impl From<serde_json::Error> for LlmMapError {
         LlmMapError::Internal(err.into())
     }
 }
-
-
 
 /// Result type alias for LLM Map operations
 pub type Result<T> = std::result::Result<T, LlmMapError>;
@@ -140,18 +138,17 @@ mod tests {
         let invalid_json = "not valid json";
         let result: serde_json::Result<serde_json::Value> = serde_json::from_str(invalid_json);
         assert!(result.is_err());
-        
+
         let err: LlmMapError = result.unwrap_err().into();
         assert!(matches!(err, LlmMapError::Internal(_)));
         assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-
-
     #[test]
     fn test_result_type_alias() {
-        let ok_result: Result<i32> = Ok(42);
-        assert_eq!(ok_result.unwrap(), 42);
+        if let Ok(value) = Ok::<i32, LlmMapError>(42) {
+            assert_eq!(value, 42);
+        }
 
         let err_result: Result<i32> = Err(LlmMapError::Config("test".to_string()));
         assert!(err_result.is_err());

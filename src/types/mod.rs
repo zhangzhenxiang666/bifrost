@@ -1,8 +1,6 @@
 //! Types module for shared data structures
 pub mod response;
-pub use response::{GatewayResponse, SSEStream};
-
-
+pub use response::GatewayResponse;
 
 use std::fmt::Display;
 use std::ops::Deref;

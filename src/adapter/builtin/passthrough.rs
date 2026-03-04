@@ -3,11 +3,12 @@
 //! This adapter is used when no transformation is needed. It simply passes
 //! the original data through unchanged.
 
-use async_trait::async_trait;
-use crate::adapter::Adapter;
-use crate::config::ProviderConfig;
+use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
+use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
 use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use async_trait::async_trait;
+use http::HeaderMap;
 
 /// Passthrough adapter that does not modify any data.
 ///
@@ -24,10 +25,34 @@ impl Adapter for PassthroughAdapter {
     async fn transform_request(
         &self,
         body: serde_json::Value,
-        _provider_config: &ProviderConfig,
+        provider_config: &ProviderConfig,
         _headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error> {
-        Ok(RequestTransform::new(body))
+        let mut request = RequestTransform::new(body);
+        let mut headers = HeaderMap::new();
+
+        match provider_config.endpoint {
+            Endpoint::OpenAI => {
+                request.url = Some(format!("{}/chat/completions", provider_config.base_url));
+                headers.insert(
+                    http::header::AUTHORIZATION,
+                    http::header::HeaderValue::from_bytes(
+                        format!("Bearer {}", provider_config.api_key).as_bytes(),
+                    )
+                    .unwrap(),
+                );
+            }
+            Endpoint::Anthropic => {
+                request.url = Some(format!("{}/v1/messages", provider_config.base_url));
+                headers.insert(
+                    X_API_KEY.clone(),
+                    http::header::HeaderValue::from_bytes(provider_config.api_key.as_bytes())
+                        .unwrap(),
+                );
+                headers.insert(ANTHROPIC_VERSION.0.clone(), ANTHROPIC_VERSION.1.clone());
+            }
+        };
+        Ok(request.with_headers(headers))
     }
 
     async fn transform_response(
@@ -64,11 +89,11 @@ mod tests {
         let config = ProviderConfig {
             base_url: "https://api.example.com".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: crate::config::Endpoint::Openai,
+            endpoint: crate::config::Endpoint::OpenAI,
             adapter: vec![],
-            headers: vec![],
-            body: vec![],
-            models: vec![],
+            headers: None,
+            body: None,
+            models: None,
         };
         let headers = HeaderMap::new();
 
@@ -78,8 +103,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.body, body);
-        assert!(result.url.is_none());
-        assert!(result.headers.is_none());
+        // Verify URL is set based on endpoint type
+        assert_eq!(
+            result.url,
+            Some("https://api.example.com/chat/completions".to_string())
+        );
+        assert!(result.headers.is_some());
     }
 
     #[tokio::test]
@@ -118,10 +147,7 @@ mod tests {
             ]
         });
 
-        let result = adapter
-            .transform_stream_chunk(chunk.clone())
-            .await
-            .unwrap();
+        let result = adapter.transform_stream_chunk(chunk.clone()).await.unwrap();
 
         assert_eq!(result.data, chunk);
         assert!(result.event.is_none());

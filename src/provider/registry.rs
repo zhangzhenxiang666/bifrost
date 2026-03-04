@@ -3,8 +3,8 @@
 //! This module provides the [`ProviderRegistry`] which manages provider configurations
 //! and builds adapter chains for request execution.
 
-use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
 use crate::adapter::builtin::OpenAIToQwenAdapter;
+use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
 use crate::config::{Config, ProviderConfig};
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
@@ -136,10 +136,9 @@ impl ProviderRegistry {
     /// let executor = registry.build_executor("qwen-code").unwrap();
     /// ```
     pub fn build_executor(&self, provider_id: &str) -> Result<OnionExecutor> {
-        let provider_info = self
-            .providers
-            .get(provider_id)
-            .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
+        let provider_info = self.providers.get(provider_id).ok_or_else(|| {
+            LlmMapError::Provider(format!("Provider '{}' not found", provider_id))
+        })?;
 
         let provider_config = provider_info.config().clone();
         let adapters = self.build_adapter_chain(&provider_config.adapter)?;
@@ -170,14 +169,9 @@ impl ProviderRegistry {
             for name in adapter_names {
                 let adapter: Box<dyn Adapter<Error = LlmMapError>> = match name.as_str() {
                     "passthrough" => Box::new(PassthroughAdapter),
-                    "openai_to_qwen" | "openai-to-qwen" => {
-                        Box::new(OpenAIToQwenAdapter)
-                    }
+                    "openai_to_qwen" | "openai-to-qwen" => Box::new(OpenAIToQwenAdapter),
                     _ => {
-                        return Err(LlmMapError::Adapter(format!(
-                            "Unknown adapter: {}",
-                            name
-                        )));
+                        return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));
                     }
                 };
                 adapters.push(adapter);
@@ -217,11 +211,11 @@ mod tests {
             ProviderConfig {
                 base_url: "https://api.test.com".to_string(),
                 api_key: "test-key".to_string(),
-                endpoint: Endpoint::Openai,
+                endpoint: Endpoint::OpenAI,
                 adapter: vec![],
-                headers: vec![],
-                body: vec![],
-                models: vec![],
+                headers: None,
+                body: None,
+                models: None,
             },
         );
 
@@ -239,11 +233,11 @@ mod tests {
             ProviderConfig {
                 base_url: "https://api.qwen.com".to_string(),
                 api_key: "qwen-key".to_string(),
-                endpoint: Endpoint::Qwen,
+                endpoint: Endpoint::OpenAI,
                 adapter: vec!["openai_to_qwen".to_string()],
-                headers: vec![],
-                body: vec![],
-                models: vec![],
+                headers: None,
+                body: None,
+                models: None,
             },
         );
 
@@ -299,7 +293,11 @@ mod tests {
         let result = executor.execute_request(body, &headers).await.unwrap();
 
         // Verify URL is set from provider config
-        assert_eq!(result.url, Some("https://api.test.com".to_string()));
+        // Verify URL is set from provider config with endpoint path
+        assert_eq!(
+            result.url,
+            Some("https://api.test.com/chat/completions".to_string())
+        );
     }
 
     #[tokio::test]
@@ -346,11 +344,11 @@ mod tests {
             ProviderConfig {
                 base_url: "https://api.test.com".to_string(),
                 api_key: "test-key".to_string(),
-                endpoint: Endpoint::Openai,
+                endpoint: Endpoint::OpenAI,
                 adapter: vec!["unknown_adapter".to_string()],
-                headers: vec![],
-                body: vec![],
-                models: vec![],
+                headers: None,
+                body: None,
+                models: None,
             },
         );
 
@@ -378,7 +376,7 @@ mod tests {
 
         assert_eq!(provider_config.base_url, "https://api.test.com");
         assert_eq!(provider_config.api_key, "test-key");
-        assert_eq!(provider_config.endpoint, Endpoint::Openai);
+        assert_eq!(provider_config.endpoint, Endpoint::OpenAI);
     }
 
     #[test]
@@ -386,9 +384,9 @@ mod tests {
         let config = create_test_config();
         let registry = ProviderRegistry::from_config(&config);
 
-        let client = registry.http_client();
+        let _client = registry.http_client();
         // Just verify we can access the client
-        assert!(true);
+        // HttpClient accessed successfully
     }
 
     #[test]
@@ -399,17 +397,17 @@ mod tests {
             ProviderConfig {
                 base_url: "https://api.custom.com".to_string(),
                 api_key: "custom-key".to_string(),
-                endpoint: Endpoint::Openai,
+                endpoint: Endpoint::OpenAI,
                 adapter: vec![],
-                headers: vec![HeaderEntry {
+                headers: Some(vec![HeaderEntry {
                     name: "X-Custom-Header".to_string(),
                     value: "custom-value".to_string(),
-                }],
-                body: vec![BodyEntry {
+                }]),
+                body: Some(vec![BodyEntry {
                     name: "custom_field".to_string(),
                     value: json!("custom_value"),
-                }],
-                models: vec![],
+                }]),
+                models: None,
             },
         );
 
@@ -421,9 +419,15 @@ mod tests {
         let registry = ProviderRegistry::from_config(&config);
         let provider_info = registry.get("custom-provider").unwrap();
 
-        assert_eq!(provider_info.config().headers.len(), 1);
-        assert_eq!(provider_info.config().body.len(), 1);
-        assert_eq!(provider_info.config().headers[0].name, "X-Custom-Header");
-        assert_eq!(provider_info.config().body[0].name, "custom_field");
+        assert_eq!(provider_info.config().headers.as_ref().unwrap().len(), 1);
+        assert_eq!(provider_info.config().body.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            provider_info.config().headers.as_ref().unwrap()[0].name,
+            "X-Custom-Header"
+        );
+        assert_eq!(
+            provider_info.config().body.as_ref().unwrap()[0].name,
+            "custom_field"
+        );
     }
 }

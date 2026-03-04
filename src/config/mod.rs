@@ -6,8 +6,8 @@
 mod loader;
 mod validator;
 
-use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use std::fmt;
 use std::marker::PhantomData;
 // =============================================================================
@@ -152,30 +152,20 @@ pub struct BodyEntry {
 pub enum Endpoint {
     /// OpenAI-compatible API format
     #[default]
-    Openai,
+    OpenAI,
     /// Anthropic API format
     Anthropic,
-    /// Qwen API format
-    Qwen,
-    /// Other/custom endpoint types
-    #[serde(other)]
-    Other,
 }
 
 impl Endpoint {
     /// Check if this is an OpenAI-compatible endpoint
     pub fn is_openai(&self) -> bool {
-        matches!(self, Endpoint::Openai)
+        matches!(self, Endpoint::OpenAI)
     }
 
     /// Check if this is an Anthropic endpoint
     pub fn is_anthropic(&self) -> bool {
         matches!(self, Endpoint::Anthropic)
-    }
-
-    /// Check if this is a Qwen endpoint
-    pub fn is_qwen(&self) -> bool {
-        matches!(self, Endpoint::Qwen)
     }
 }
 
@@ -189,10 +179,10 @@ pub struct ModelConfig {
     pub name: String,
     /// Optional headers specific to this model
     #[serde(default)]
-    pub headers: Vec<HeaderEntry>,
+    pub headers: Option<Vec<HeaderEntry>>,
     /// Optional body fields specific to this model
     #[serde(default)]
-    pub body: Vec<BodyEntry>,
+    pub body: Option<Vec<BodyEntry>>,
 }
 
 /// Provider configuration
@@ -209,16 +199,14 @@ pub struct ProviderConfig {
     pub adapter: Vec<String>,
     /// Optional headers to add to all requests to this provider
     #[serde(default)]
-    pub headers: Vec<HeaderEntry>,
+    pub headers: Option<Vec<HeaderEntry>>,
     /// Optional body fields to add to all requests to this provider
     #[serde(default)]
-    pub body: Vec<BodyEntry>,
+    pub body: Option<Vec<BodyEntry>>,
     /// Optional model-specific configurations
     #[serde(default)]
-    pub models: Vec<ModelConfig>,
+    pub models: Option<Vec<ModelConfig>>,
 }
-
-
 
 /// Server configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -234,7 +222,7 @@ pub struct ServerConfig {
 /// Matches config.toml format:
 /// - [provider.xxx] - nested table for providers
 /// - [server] - server configuration
-/// Provider config contains models array internally
+/// - Provider config contains models array internally
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Provider configurations (keyed by provider ID)
@@ -246,9 +234,6 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
 }
-
-
-
 
 // Default server configuration
 impl Default for ServerConfig {
@@ -355,8 +340,8 @@ mod tests {
         let provider = config.provider.get("qwen-code").unwrap();
         assert_eq!(provider.base_url, "https://api.example.com");
         assert_eq!(provider.adapter, vec!["openai-to-qwen"]);
-        assert_eq!(provider.models.len(), 1);
-        assert_eq!(provider.models[0].name, "coder-model");
+        assert_eq!(provider.models.as_ref().unwrap().len(), 1);
+        assert_eq!(provider.models.as_ref().unwrap()[0].name, "coder-model");
     }
 
     #[test]

@@ -1,0 +1,336 @@
+//! Generic route handler utilities for LLM endpoints
+
+use axum::response::sse::Event;
+use futures::stream::StreamExt;
+use http::{HeaderMap, header};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+use crate::adapter::OnionExecutor;
+use crate::error::{LlmMapError, Result};
+use crate::provider::registry::ProviderRegistry;
+use crate::types::RequestTransform;
+use crate::types::response::GatewayResponse;
+
+/// Application state for route handlers
+#[derive(Clone)]
+pub struct AppState {
+    pub registry: ProviderRegistry,
+}
+
+impl From<ProviderRegistry> for AppState {
+    fn from(registry: ProviderRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+/// Function type for building endpoint URLs
+pub type UrlBuilder = dyn Fn(&str, &str) -> String + Send + Sync;
+
+/// Configuration for an endpoint
+pub struct EndpointConfig {
+    /// Default URL path pattern for this endpoint
+    pub default_path_pattern: String,
+    /// Custom URL builder function (optional)
+    pub url_builder: Option<Arc<UrlBuilder>>,
+}
+
+impl EndpointConfig {
+    /// Create a new endpoint configuration with a simple path pattern
+    pub fn new(default_path_pattern: impl Into<String>) -> Self {
+        Self {
+            default_path_pattern: default_path_pattern.into(),
+            url_builder: None,
+        }
+    }
+
+    /// Create a new endpoint configuration with a custom URL builder
+    pub fn with_builder<F>(url_builder: F) -> Self
+    where
+        F: Fn(&str, &str) -> String + Send + Sync + 'static,
+    {
+        Self {
+            default_path_pattern: String::new(),
+            url_builder: Some(Arc::new(url_builder)),
+        }
+    }
+
+    /// Build the URL for this endpoint
+    pub fn build_url(&self, base_url: &str, model: &str) -> String {
+        if let Some(builder) = &self.url_builder {
+            builder(base_url, model)
+        } else {
+            let path = self.default_path_pattern.replace("{model}", model);
+            join_url_paths(base_url, &path)
+        }
+    }
+}
+
+/// Join two URL path components, handling slashes properly
+fn join_url_paths(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{}/{}", base, path)
+}
+
+/// Context for processing provider responses
+pub struct RequestContext {
+    pub url: String,
+    pub body: Value,
+    pub headers: HeaderMap,
+    pub executor: OnionExecutor,
+}
+
+/// Parse `provider@model` format into provider ID and model name
+pub fn parse_model(model: &str) -> Result<(&str, &str)> {
+    model.split_once('@').ok_or_else(|| {
+        LlmMapError::Validation(
+            "Invalid model format. Expected 'provider@model' format".to_string(),
+        )
+    })
+}
+
+/// Execute a provider request and return the transformed response
+///
+/// # Provider Configuration Handling
+///
+/// This function processes provider configuration in the following order:
+/// 1. **Provider-level config**: Merges `provider.body` and `provider.headers` first
+/// 2. **Adapter transformation**: Executes adapter chain which may modify body/headers
+/// 3. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
+///
+/// # TODO
+///
+/// - [ ] Validate if the requested model is in provider's allowed models list
+/// - [ ] Apply model-specific headers/body if model is configured in `provider.models`
+pub async fn execute_provider_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    mut body: Value,
+    config: &EndpointConfig,
+) -> Result<RequestContext> {
+    let model_value = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
+
+    let (provider_id, model_name) = parse_model(&model_value)?;
+
+    let provider = state
+        .registry
+        .get(provider_id)
+        .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
+
+    let url = config.build_url(provider.base_url(), model_name);
+
+    *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
+
+    let mut final_headers = HeaderMap::new();
+
+    let executor = state.registry.build_executor(provider_id)?;
+
+    let RequestTransform {
+        mut body,
+        url: transform_url,
+        headers: transform_headers,
+    } = executor.execute_request(body, headers).await?;
+
+    let final_url = transform_url.unwrap_or(url);
+
+    // Merge provider-configured body fields into the request body
+    if let Some(provider_body_fields) = provider.config().body.as_ref() {
+        for body_entry in provider_body_fields {
+            body[&body_entry.name] = body_entry.value.clone();
+        }
+    }
+
+    if let Some(phs) = provider.config().headers.as_ref() {
+        phs.iter().for_each(|header_entry| {
+            if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
+                && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
+            {
+                final_headers.insert(header_name, header_value);
+            }
+        });
+    }
+
+    if let Some(hs) = transform_headers {
+        final_headers.extend(hs);
+    }
+
+    // Merge model-specific body fields if model is configured in provider.models
+    if let Some(models_config) = provider.config().models.as_ref()
+        && let Some(model_cfg) = models_config.iter().find(|m| m.name == model_name)
+    {
+        // Merge model-specific body fields
+        if let Some(model_body_fields) = model_cfg.body.as_ref() {
+            for body_entry in model_body_fields {
+                body[&body_entry.name] = body_entry.value.clone();
+            }
+        }
+        // Merge model-specific headers
+        if let Some(model_headers) = model_cfg.headers.as_ref() {
+            for header_entry in model_headers {
+                if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
+                    && let Ok(header_value) =
+                        header_entry.value.parse::<http::header::HeaderValue>()
+                {
+                    final_headers.insert(header_name, header_value);
+                }
+            }
+        }
+    }
+
+    Ok(RequestContext {
+        url: final_url,
+        body,
+        headers: final_headers,
+        executor,
+    })
+}
+
+/// Process a streaming request and return SSE response
+pub async fn process_stream_request(
+    state: &AppState,
+    ctx: RequestContext,
+) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
+    let stream = state
+        .registry
+        .http_client()
+        .send_sse_stream(ctx.url, ctx.body, ctx.headers)
+        .await
+        .map_err(LlmMapError::Http)?;
+
+    // Only wrap executor in Arc for streaming (needed for closure)
+    let executor = Arc::new(ctx.executor);
+    let sse_stream = stream.filter_map(move |event_result| {
+        let executor = executor.clone();
+        async move {
+            match event_result {
+                Ok(event) => {
+                    if crate::utils::is_done_event(&event.data) {
+                        return None;
+                    }
+                    let chunk: Value = serde_json::from_str(&event.data)
+                        .unwrap_or_else(|_| json!({"raw": event.data}));
+                    let transformed = executor.execute_stream_chunk(chunk).await.ok()?;
+                    let data = serde_json::to_string(&transformed.data)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    Some(Ok::<_, axum::BoxError>(Event::default().data(data)))
+                }
+                Err(err) => Some(Err(axum::BoxError::from(err))),
+            }
+        }
+    });
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate".parse().unwrap(),
+    );
+    headers.insert("Pragma", "no-cache".parse().unwrap());
+    headers.insert("Expires", "0".parse().unwrap());
+    headers.insert(header::CONNECTION, "keep-alive".parse().unwrap());
+    headers.insert("X-Accel-Buffering", "no".parse().unwrap());
+
+    let sse_response = crate::utils::sse::create_sse_stream(sse_stream);
+
+    Ok((
+        http::StatusCode::OK,
+        headers,
+        GatewayResponse::Sse(sse_response),
+    ))
+}
+
+/// Process a non-streaming request and return JSON response
+pub async fn process_json_request(
+    state: &AppState,
+    ctx: RequestContext,
+) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
+    let response = state
+        .registry
+        .http_client()
+        .send_request(&ctx.url, ctx.body, ctx.headers)
+        .await
+        .map_err(LlmMapError::Http)?;
+
+    let mut headers = response.headers().clone();
+    let status_code = response.status();
+
+    let response_json: Value = response
+        .json()
+        .await
+        .map_err(|e| LlmMapError::Internal(e.into()))?;
+
+    let res = ctx
+        .executor
+        .execute_response(response_json, status_code, &headers)
+        .await?;
+
+    let state_code = res.status.unwrap_or(status_code);
+
+    if let Some(hs) = res.headers {
+        headers.extend(hs);
+    }
+
+    Ok((
+        state_code,
+        headers,
+        GatewayResponse::Json(axum::Json(res.body)),
+    ))
+}
+
+/// Helper function to handle both streaming and non-streaming requests
+pub async fn handle_llm_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Value,
+    config: &EndpointConfig,
+    is_stream: bool,
+) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
+    let ctx = execute_provider_request(state, headers, body, config).await?;
+
+    if is_stream {
+        process_stream_request(state, ctx).await
+    } else {
+        process_json_request(state, ctx).await
+    }
+}
+
+// Re-export Headers extractor
+pub use crate::utils::Headers;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_model_with_provider() {
+        let result = parse_model("qwen-code@gpt-4");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), ("qwen-code", "gpt-4"));
+    }
+
+    #[test]
+    fn test_parse_model_without_provider() {
+        assert!(parse_model("gpt-4").is_err());
+    }
+
+    #[test]
+    fn test_join_url_paths() {
+        assert_eq!(
+            join_url_paths("https://api.example.com/", "/v1/chat"),
+            "https://api.example.com/v1/chat"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_config_build_url_with_model_placeholder() {
+        let config = EndpointConfig::new("/v1/models/{model}:generateContent");
+        assert_eq!(
+            config.build_url("https://generativelanguage.googleapis.com", "gemini-pro"),
+            "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
+        );
+    }
+}
