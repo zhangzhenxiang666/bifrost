@@ -3,32 +3,49 @@
 //! Provides a wrapper around reqwest::Client with support for
 //! both non-streaming and streaming requests.
 
-use eventsource_stream::{EventStreamError, Eventsource};
-use futures::stream::Stream;
-
 use http::HeaderMap;
 use reqwest::{Client, Response};
 use serde_json::Value;
 
 /// HTTP client wrapper with configurable timeout
 #[derive(Clone)]
-pub struct HttpClient {
-    client: Client,
-}
+pub struct HttpClient(Client);
 
 impl HttpClient {
     /// Create a new HttpClient with the specified timeout in seconds and optional proxy
+    ///
+    /// # Panics
+    /// Panics if the proxy URL is invalid or if the HTTP client fails to build.
+    /// In production, use `try_new()` instead for proper error handling.
     pub fn new(timeout_secs: u64, proxy: Option<&str>) -> Self {
+        Self::try_new(timeout_secs, proxy).expect("Failed to create HTTP client")
+    }
+
+    /// Create a new HttpClient with proper error handling
+    pub fn try_new(
+        timeout_secs: u64,
+        proxy: Option<&str>,
+    ) -> Result<Self, crate::error::LlmMapError> {
         let mut builder = Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
 
         if let Some(proxy_url) = proxy {
-            builder =
-                builder.proxy(reqwest::Proxy::all(proxy_url).expect("Failed to parse proxy URL"));
+            let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| {
+                crate::error::LlmMapError::Config(format!(
+                    "Invalid proxy URL '{}': {}",
+                    proxy_url, e
+                ))
+            })?;
+            builder = builder.proxy(proxy);
             builder = builder.danger_accept_invalid_certs(true);
         }
 
-        let client = builder.build().expect("Failed to build HTTP client");
-        Self { client }
+        let client = builder.build().map_err(|e| {
+            crate::error::LlmMapError::Internal(anyhow::anyhow!(
+                "Failed to build HTTP client: {}",
+                e
+            ))
+        })?;
+        Ok(Self(client))
     }
 
     /// Send a non-streaming POST request
@@ -46,54 +63,7 @@ impl HttpClient {
         body: Value,
         headers: HeaderMap,
     ) -> Result<Response, reqwest::Error> {
-        self.client
-            .post(url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await
-    }
-
-    /// Send a streaming POST request and process SSE events
-    ///
-    /// # Arguments
-    /// * `url` - The target URL
-    /// * `body` - JSON body to send
-    /// * `headers` - HTTP headers to include
-    ///
-    /// # Returns
-    /// A stream of SSE events
-    /// Send a streaming POST request and process SSE events
-    ///
-    /// # Arguments
-    /// * `url` - The target URL
-    /// * `body` - JSON body to send
-    /// * `headers` - HTTP headers to include
-    ///
-    /// # Returns
-    /// A Result containing a stream of SSE events, or reqwest::Error on request failure
-    pub async fn send_sse_stream(
-        &self,
-        url: String,
-        body: Value,
-        mut headers: HeaderMap,
-    ) -> Result<
-        impl Stream<Item = Result<eventsource_stream::Event, EventStreamError<reqwest::Error>>> + use<>,
-        reqwest::Error,
-    > {
-        use http::header::ACCEPT;
-
-        headers.insert(ACCEPT, "text/event-stream".parse().unwrap());
-
-        let response = self
-            .client
-            .post(url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?;
-
-        Ok(response.bytes_stream().eventsource())
+        self.0.post(url).headers(headers).json(&body).send().await
     }
 }
 

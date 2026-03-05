@@ -6,7 +6,7 @@
 use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
 use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
-use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::RequestTransform;
 use async_trait::async_trait;
 use http::HeaderMap;
 
@@ -53,22 +53,6 @@ impl Adapter for PassthroughAdapter {
             }
         };
         Ok(request.with_headers(headers))
-    }
-
-    async fn transform_response(
-        &self,
-        body: serde_json::Value,
-        _status: http::StatusCode,
-        _headers: &http::HeaderMap,
-    ) -> Result<ResponseTransform, Self::Error> {
-        Ok(ResponseTransform::new(body))
-    }
-
-    async fn transform_stream_chunk(
-        &self,
-        chunk: serde_json::Value,
-    ) -> Result<StreamChunkTransform, Self::Error> {
-        Ok(StreamChunkTransform::new(chunk))
     }
 }
 

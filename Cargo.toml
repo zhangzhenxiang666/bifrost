@@ -25,7 +25,11 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "chrono"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "time",
+    "chrono",
+] }
 
 # Middleware
 tower-http = { version = "0.6", features = ["cors", "trace"] }
@@ -42,6 +46,10 @@ eventsource-stream = "0.2.3"
 
 # TOML support
 toml = "0.8"
+
+# URL encoding
+urlencoding = "2.1"
+
 
 [dev-dependencies]
 tempfile = "3"

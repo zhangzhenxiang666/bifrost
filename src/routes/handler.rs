@@ -1,16 +1,16 @@
 //! Generic route handler utilities for LLM endpoints
 
+use crate::adapter::OnionExecutor;
+use crate::error::{LlmMapError, Result};
+use crate::provider::registry::ProviderRegistry;
+use crate::model::RequestTransform;
+use axum::response::IntoResponse;
 use axum::response::sse::Event;
+use eventsource_stream::Eventsource;
 use futures::stream::StreamExt;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-use crate::adapter::OnionExecutor;
-use crate::error::{LlmMapError, Result};
-use crate::provider::registry::ProviderRegistry;
-use crate::types::RequestTransform;
-use crate::types::response::GatewayResponse;
 
 /// Application state for route handlers
 #[derive(Clone)]
@@ -32,7 +32,7 @@ pub struct EndpointConfig {
     /// Default URL path pattern for this endpoint
     pub default_path_pattern: String,
     /// Custom URL builder function (optional)
-    pub url_builder: Option<Arc<UrlBuilder>>,
+    pub url_builder: Option<Box<UrlBuilder>>,
 }
 
 impl EndpointConfig {
@@ -51,7 +51,7 @@ impl EndpointConfig {
     {
         Self {
             default_path_pattern: String::new(),
-            url_builder: Some(Arc::new(url_builder)),
+            url_builder: Some(Box::new(url_builder)),
         }
     }
 
@@ -98,11 +98,6 @@ pub fn parse_model(model: &str) -> Result<(&str, &str)> {
 /// 1. **Provider-level config**: Merges `provider.body` and `provider.headers` first
 /// 2. **Adapter transformation**: Executes adapter chain which may modify body/headers
 /// 3. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
-///
-/// # TODO
-///
-/// - [ ] Validate if the requested model is in provider's allowed models list
-/// - [ ] Apply model-specific headers/body if model is configured in `provider.models`
 pub async fn execute_provider_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -124,7 +119,15 @@ pub async fn execute_provider_request(
 
     let url = config.build_url(provider.base_url(), model_name);
 
-    *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
+    // Update model field to use model_name only (without provider prefix)
+    // Safety: We just verified model exists at line 107-111
+    if let Some(model_field) = body.get_mut("model") {
+        *model_field = Value::String(model_name.to_string());
+    } else {
+        return Err(LlmMapError::Internal(anyhow::anyhow!(
+            "Model field disappeared after validation"
+        )));
+    }
 
     let mut final_headers = HeaderMap::new();
 
@@ -194,35 +197,57 @@ pub async fn execute_provider_request(
 pub async fn process_stream_request(
     state: &AppState,
     ctx: RequestContext,
-) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
-    let stream = state
+) -> Result<axum::response::Response> {
+    let RequestContext {
+        url,
+        body,
+        mut headers,
+        executor,
+    } = ctx;
+
+    headers.insert(header::ACCEPT, "text/event-stream".parse().unwrap());
+
+    let response = state
         .registry
         .http_client()
-        .send_sse_stream(ctx.url, ctx.body, ctx.headers)
+        .send_request(&url, body, headers)
         .await
         .map_err(LlmMapError::Http)?;
 
+    let status_code = response.status();
+    let upstream_headers = response.headers().clone();
+
+    // Check if status code indicates an error (e.g., 429 Too Many Requests)
+    // If so, return error response instead of streaming
+    if !status_code.is_success() {
+        let body = response.bytes().await.map_err(LlmMapError::Http)?;
+        return Ok((status_code, upstream_headers, body).into_response());
+    }
+
     // Only wrap executor in Arc for streaming (needed for closure)
-    let executor = Arc::new(ctx.executor);
-    let sse_stream = stream.filter_map(move |event_result| {
-        let executor = executor.clone();
-        async move {
-            match event_result {
-                Ok(event) => {
-                    if crate::utils::is_done_event(&event.data) {
-                        return None;
+    let executor = Arc::new(executor);
+    let sse_stream = response
+        .bytes_stream()
+        .eventsource()
+        .filter_map(move |event_result| {
+            let executor = executor.clone();
+            async move {
+                match event_result {
+                    Ok(event) => {
+                        if crate::utils::is_done_event(&event.data) {
+                            return None;
+                        }
+                        let chunk: Value = serde_json::from_str(&event.data)
+                            .unwrap_or_else(|_| json!({"raw": event.data}));
+                        let transformed = executor.execute_stream_chunk(chunk).await.ok()?;
+                        let data = serde_json::to_string(&transformed.data)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Some(Ok(Event::default().data(data)))
                     }
-                    let chunk: Value = serde_json::from_str(&event.data)
-                        .unwrap_or_else(|_| json!({"raw": event.data}));
-                    let transformed = executor.execute_stream_chunk(chunk).await.ok()?;
-                    let data = serde_json::to_string(&transformed.data)
-                        .unwrap_or_else(|_| "{}".to_string());
-                    Some(Ok::<_, axum::BoxError>(Event::default().data(data)))
+                    Err(err) => Some(Err(axum::BoxError::from(err))),
                 }
-                Err(err) => Some(Err(axum::BoxError::from(err))),
             }
-        }
-    });
+        });
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -234,30 +259,51 @@ pub async fn process_stream_request(
     headers.insert(header::CONNECTION, "keep-alive".parse().unwrap());
     headers.insert("X-Accel-Buffering", "no".parse().unwrap());
 
-    let sse_response = crate::utils::sse::create_sse_stream(sse_stream);
+    // Header passthrough: copy all upstream headers except content-length and transfer-encoding
+    for (key, value) in upstream_headers {
+        if let Some(header_key) = key {
+            let key_name = header_key.as_str();
+            if key_name != "content-length" && key_name != "transfer-encoding" {
+                headers.insert(header_key, value);
+            }
+        }
+    }
 
-    Ok((
-        http::StatusCode::OK,
-        headers,
-        GatewayResponse::Sse(sse_response),
-    ))
+    let sse_response = crate::utils::create_sse_stream(sse_stream);
+
+    Ok((status_code, headers, sse_response).into_response())
 }
 
 /// Process a non-streaming request and return JSON response
 pub async fn process_json_request(
     state: &AppState,
     ctx: RequestContext,
-) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
+) -> Result<axum::response::Response> {
     let response = state
         .registry
         .http_client()
         .send_request(&ctx.url, ctx.body, ctx.headers)
         .await
         .map_err(LlmMapError::Http)?;
-
-    let mut headers = response.headers().clone();
+    let upstream_headers = response.headers().clone();
     let status_code = response.status();
 
+    if !status_code.is_success() {
+        let body = response.bytes().await.map_err(LlmMapError::Http)?;
+        return Ok((status_code, upstream_headers, body).into_response());
+    }
+
+    // Build headers map, excluding content-length and transfer-encoding
+    // since axum will recalculate these based on the transformed response
+    let mut headers = HeaderMap::new();
+    for (key, value) in upstream_headers {
+        if let Some(header_key) = key {
+            let key_name = header_key.as_str();
+            if key_name != "content-length" && key_name != "transfer-encoding" {
+                headers.insert(header_key, value);
+            }
+        }
+    }
     let response_json: Value = response
         .json()
         .await
@@ -274,11 +320,7 @@ pub async fn process_json_request(
         headers.extend(hs);
     }
 
-    Ok((
-        state_code,
-        headers,
-        GatewayResponse::Json(axum::Json(res.body)),
-    ))
+    Ok((state_code, headers, axum::Json(res.body)).into_response())
 }
 
 /// Helper function to handle both streaming and non-streaming requests
@@ -288,7 +330,7 @@ pub async fn handle_llm_request(
     body: Value,
     config: &EndpointConfig,
     is_stream: bool,
-) -> Result<(http::StatusCode, HeaderMap, GatewayResponse)> {
+) -> Result<axum::response::Response> {
     let ctx = execute_provider_request(state, headers, body, config).await?;
 
     if is_stream {
@@ -297,9 +339,6 @@ pub async fn handle_llm_request(
         process_json_request(state, ctx).await
     }
 }
-
-// Re-export Headers extractor
-pub use crate::utils::Headers;
 
 #[cfg(test)]
 mod tests {

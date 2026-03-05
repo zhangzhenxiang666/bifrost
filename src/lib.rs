@@ -5,9 +5,9 @@
 
 pub mod adapter;
 pub mod config;
+pub mod error;
+pub mod middleware;
+pub mod model;
 pub mod provider;
 pub mod routes;
-pub mod types;
 pub mod utils;
-
-pub mod error;

@@ -1,6 +1,6 @@
 //! Logging utilities for tracing configuration
 
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Initialize logging with tracing-subscriber
 ///

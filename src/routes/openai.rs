@@ -17,13 +17,9 @@ fn openai_config() -> &'static EndpointConfig {
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<AppState>,
-    handler::Headers(headers): handler::Headers,
+    headers: http::header::HeaderMap,
     Json(body): Json<Value>,
-) -> Result<(
-    http::StatusCode,
-    http::header::HeaderMap,
-    crate::types::response::GatewayResponse,
-)> {
+) -> Result<axum::response::Response> {
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())

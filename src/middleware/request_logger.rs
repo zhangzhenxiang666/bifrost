@@ -6,7 +6,7 @@ use axum::{
     response::Response,
 };
 use std::{net::SocketAddr, time::Instant};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// Middleware for logging HTTP requests
 ///
@@ -38,8 +38,7 @@ pub async fn request_logger(
     let response = next.run(request).await;
 
     let duration = start.elapsed();
-    let status = response.status();
-    let status_code = status.as_u16();
+    let status_code = response.status();
     let duration_ms = duration.as_millis();
     let http_version = match version {
         axum::http::Version::HTTP_09 => "HTTP/0.9",
@@ -49,7 +48,8 @@ pub async fn request_logger(
         axum::http::Version::HTTP_3 => "HTTP/3",
         _ => "HTTP/?.?",
     };
-    // Log in FastAPI-style format with log level based on status code
+
+    // Log error response body for 4xx and 5xx status codes
     let log_message = format!(
         "{}:{} - \"{} {} {}\" {} - {}ms",
         client_ip.ip(),
@@ -61,13 +61,34 @@ pub async fn request_logger(
         duration_ms
     );
 
-    // Choose log level based on status code
-    match status_code {
-        200..=399 => info!("{}", log_message),
-        400..=499 => warn!("{}", log_message),
-        500..=599 => error!("{}", log_message),
-        _ => info!("{}", log_message),
-    };
+    // For error responses, log the response body as well
+    if !status_code.is_success() {
+        let (parts, body) = response.into_parts();
+
+        // Read response body as bytes
+        let body_bytes = match axum::body::to_bytes(body, 8 * 1024).await {
+            // Limit to 8KB
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!("Failed to read response body: {}", e);
+                axum::body::Bytes::new()
+            }
+        };
+
+        // Log error with response body
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        error!("{} - Response body: {}", log_message, body_str.trim());
+
+        // Recombine parts and body to return response
+        let response = Response::from_parts(parts, axum::body::Body::from(body_bytes));
+        return response;
+    }
+
+    if status_code.is_success() {
+        info!("{}", log_message)
+    } else {
+        error!("{}", log_message)
+    }
 
     response
 }

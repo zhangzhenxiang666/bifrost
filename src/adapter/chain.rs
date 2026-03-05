@@ -11,7 +11,7 @@ use http::HeaderMap;
 use crate::adapter::Adapter;
 use crate::config::ProviderConfig;
 use crate::error::{LlmMapError, Result};
-use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 
 /// Executor that manages the adapter chain in an onion architecture.
 ///
@@ -42,9 +42,9 @@ impl OnionExecutor {
     /// # #[async_trait::async_trait]
     /// # impl Adapter for MyAdapter {
     /// #     type Error = LlmMapError;
-    /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<llm_map::types::RequestTransform, Self::Error> { Ok(llm_map::types::RequestTransform::new(body)) }
-    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<llm_map::types::ResponseTransform, Self::Error> { Ok(llm_map::types::ResponseTransform::new(body)) }
-    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value) -> Result<llm_map::types::StreamChunkTransform, Self::Error> { Ok(llm_map::types::StreamChunkTransform::new(chunk)) }
+    /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<llm_map::model::RequestTransform, Self::Error> { Ok(llm_map::model::RequestTransform::new(body)) }
+    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<llm_map::model::ResponseTransform, Self::Error> { Ok(llm_map::model::ResponseTransform::new(body)) }
+    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value) -> Result<llm_map::model::StreamChunkTransform, Self::Error> { Ok(llm_map::model::StreamChunkTransform::new(chunk)) }
     /// # }
     /// # let provider_config = ProviderConfig {
     /// #     base_url: "https://api.example.com".to_string(),
@@ -283,8 +283,8 @@ mod tests {
         async fn transform_stream_chunk(
             &self,
             chunk: serde_json::Value,
-        ) -> Result<crate::types::StreamChunkTransform> {
-            Ok(crate::types::StreamChunkTransform::new(chunk))
+        ) -> Result<crate::model::StreamChunkTransform> {
+            Ok(crate::model::StreamChunkTransform::new(chunk))
         }
     }
 

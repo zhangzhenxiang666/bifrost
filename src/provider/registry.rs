@@ -12,29 +12,27 @@ use std::collections::HashMap;
 
 /// Provider information containing configuration and built adapters
 #[derive(Clone)]
-pub struct ProviderInfo {
-    config: ProviderConfig,
-}
+pub struct ProviderInfo(ProviderConfig);
 
 impl ProviderInfo {
     /// Create a new provider info from configuration
     pub fn new(config: ProviderConfig) -> Self {
-        Self { config }
+        Self(config)
     }
 
     /// Get the provider configuration
     pub fn config(&self) -> &ProviderConfig {
-        &self.config
+        &self.0
     }
 
     /// Get the base URL for this provider
     pub fn base_url(&self) -> &str {
-        &self.config.base_url
+        &self.0.base_url
     }
 
     /// Get the API key for this provider
     pub fn api_key(&self) -> &str {
-        &self.config.api_key
+        &self.0.api_key
     }
 }
 
@@ -69,6 +67,11 @@ impl ProviderRegistry {
     /// let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
     /// ```
+    /// Create a new provider registry from configuration.
+    ///
+    /// # Panics
+    /// Panics if the HTTP client fails to build (e.g., invalid proxy URL).
+    /// This is acceptable for startup initialization.
     pub fn from_config(config: &Config) -> Self {
         let mut providers = HashMap::new();
 

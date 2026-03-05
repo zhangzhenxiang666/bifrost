@@ -4,7 +4,7 @@
 //! The trait uses [`macro@async_trait`] to allow async methods in traits.
 
 use crate::config::ProviderConfig;
-use crate::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 use async_trait::async_trait;
 
 /// Core trait for LLM provider adapters.
@@ -22,7 +22,7 @@ use async_trait::async_trait;
 /// use async_trait::async_trait;
 /// use llm_map::adapter::Adapter;
 /// use llm_map::config::{Endpoint, ProviderConfig};
-/// use llm_map::types::{RequestTransform, ResponseTransform, StreamChunkTransform};
+/// use llm_map::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 ///
 /// struct MyAdapter;
 ///
@@ -104,9 +104,11 @@ pub trait Adapter: Send + Sync {
     async fn transform_response(
         &self,
         body: serde_json::Value,
-        status: http::StatusCode,
-        headers: &http::HeaderMap,
-    ) -> Result<ResponseTransform, Self::Error>;
+        _status: http::StatusCode,
+        _headers: &http::HeaderMap,
+    ) -> Result<ResponseTransform, Self::Error> {
+        Ok(ResponseTransform::new(body))
+    }
 
     /// Transform a streaming response chunk from the LLM provider.
     ///
@@ -124,5 +126,7 @@ pub trait Adapter: Send + Sync {
     async fn transform_stream_chunk(
         &self,
         chunk: serde_json::Value,
-    ) -> Result<StreamChunkTransform, Self::Error>;
+    ) -> Result<StreamChunkTransform, Self::Error> {
+        Ok(StreamChunkTransform::new(chunk))
+    }
 }
