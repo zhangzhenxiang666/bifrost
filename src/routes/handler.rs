@@ -7,10 +7,10 @@ use crate::provider::registry::ProviderRegistry;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use eventsource_stream::Eventsource;
-use futures::{stream::StreamExt, TryStreamExt};
+use futures::stream::StreamExt;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Application state for route handlers
 #[derive(Clone)]
@@ -224,58 +224,65 @@ pub async fn process_stream_request(
         return Ok((status_code, upstream_headers, body).into_response());
     }
 
-    // Only wrap executor in Arc for streaming (needed for closure)
-    let executor = Arc::new(executor);
-    let sse_stream = response
-        .bytes_stream()
-        .eventsource()
-        .then(move |event_result| {
-            let executor = executor.clone();
-            async move {
-                match event_result {
-                    Ok(event) => {
-                        // Skip [DONE] sentinel - standard OpenAI format to end stream
-                        if event.data.starts_with("[DONE]") {
-                            return Ok::<_, axum::BoxError>(futures::stream::iter(Vec::new()));
-                        }
-                        
-                        // Parse chunk - let adapter handle any format
-                        let chunk: Value = serde_json::from_str(&event.data)
-                            .unwrap_or_else(|_| json!({"raw": event.data}));
-                        
-                        // Transform through adapter chain
-                        let transform = executor
-                            .execute_stream_chunk(chunk, event.event)
-                            .await;
-                        
-                        // If transformation failed, skip this chunk (don't send error to client)
-                        let Ok(transform) = transform else {
-                            return Ok(futures::stream::iter(Vec::new()));
-                        };
-                        
-                        // Convert all events to SSE events
-                        let mut sse_events = Vec::new();
-                        for (data, event_name) in transform.events {
-                            let data_str = serde_json::to_string(&data)
-                                .unwrap_or_else(|_| "{}".to_string());
-                            let mut sse_event = Event::default().data(data_str);
-                            if let Some(name) = event_name {
-                                sse_event = sse_event.event(name);
-                            }
-                            sse_events.push(Ok(sse_event));
-                        }
-                        
-                        Ok::<_, axum::BoxError>(futures::stream::iter(sse_events))
+    // Create channel for real-time streaming
+    // Buffer size 32 is enough for real-time streaming without too much memory pressure
+    let (tx, rx) = mpsc::channel::<std::result::Result<Event, axum::BoxError>>(32);
+
+    // Spawn task to process upstream stream and send events via channel
+    tokio::spawn(async move {
+        let mut stream = response.bytes_stream().eventsource();
+
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    // Skip [DONE] sentinel - standard OpenAI format to end stream
+                    if event.data.starts_with("[DONE]") {
+                        continue;
                     }
-                    Err(_err) => {
-                        // On SSE parsing error, skip this chunk (don't send error to client)
-                        Ok::<_, axum::BoxError>(futures::stream::iter(Vec::new()))
+
+                    // Parse chunk - let adapter handle any format
+                    let chunk: Value = serde_json::from_str(&event.data)
+                        .unwrap_or_else(|_| json!({"raw": event.data}));
+
+                    // Transform through adapter chain
+                    let transform = executor.execute_stream_chunk(chunk, event.event).await;
+
+                    // If transformation failed, skip this chunk (don't send error to client)
+                    let Ok(transform) = transform else {
+                        continue;
+                    };
+
+                    // Convert all events to SSE events and send immediately
+                    for (data, event_name) in transform.events {
+                        let data_str =
+                            serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+                        let mut sse_event = Event::default().data(data_str);
+                        if let Some(name) = event_name {
+                            sse_event = sse_event.event(name);
+                        }
+                        // Send event - if receiver is dropped, stop processing
+                        if tx.send(Ok(sse_event)).await.is_err() {
+                            break;
+                        }
                     }
                 }
+                Err(_err) => {
+                    // Skip parse errors, continue processing
+                    continue;
+                }
             }
-        })
-        .try_flatten()
-        .boxed();
+        }
+        // Channel will be closed automatically when tx is dropped
+    });
+
+    // Convert receiver to stream for axum SSE
+    let sse_stream = futures::stream::unfold(rx, move |mut rx| async move {
+        match rx.recv().await {
+            Some(Ok(event)) => Some((Ok(event), rx)),
+            Some(Err(e)) => Some((Err(e), rx)),
+            None => None, // Channel closed, end stream
+        }
+    });
 
     let mut headers = HeaderMap::new();
     headers.insert(

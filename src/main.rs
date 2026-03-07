@@ -1,8 +1,8 @@
 use axum::Router;
 use llm_map::config::Config;
-use llm_map::provider::registry::ProviderRegistry;
-use llm_map::routes::{AppState, chat_completions};
 use llm_map::middleware::request_logger;
+use llm_map::provider::registry::ProviderRegistry;
+use llm_map::routes::{AppState, chat_completions, messages};
 use llm_map::utils::init_logging;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
             "/openai/chat/completions",
             axum::routing::post(chat_completions),
         )
+        .route("/anthropic/v1/messages", axum::routing::post(messages))
         .with_state(state)
         // Add request logging middleware
         .layer(axum::middleware::from_fn(request_logger))
@@ -54,7 +55,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to bind to address {}: {}", addr, e))?;
 
-    info!("Server listening on http://{}", addr);
     info!("proxy is: {:?}", config.server.proxy);
     info!("LLM Map service is ready on http://{}", addr);
 

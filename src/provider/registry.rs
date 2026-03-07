@@ -3,7 +3,7 @@
 //! This module provides the [`ProviderRegistry`] which manages provider configurations
 //! and builds adapter chains for request execution.
 
-use crate::adapter::builtin::OpenAIToQwenAdapter;
+use crate::adapter::builtin::{AnthropicToOpenAIAdapter, OpenAIToQwenAdapter};
 use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
 use crate::config::{Config, ProviderConfig};
 use crate::error::{LlmMapError, Result};
@@ -173,6 +173,7 @@ impl ProviderRegistry {
                 let adapter: Box<dyn Adapter<Error = LlmMapError>> = match name.as_str() {
                     "passthrough" => Box::new(PassthroughAdapter),
                     "openai_to_qwen" | "openai-to-qwen" => Box::new(OpenAIToQwenAdapter),
+                    "anthropic_to_openai" | "anthropic-to-openai" => Box::new(AnthropicToOpenAIAdapter::new()),
                     _ => {
                         return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));
                     }

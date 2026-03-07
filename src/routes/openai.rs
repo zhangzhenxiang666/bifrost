@@ -1,11 +1,10 @@
 //! OpenAI-compatible route for chat completions endpoint
 
+use crate::error::Result;
+use crate::routes::handler::{self, AppState, EndpointConfig};
 use axum::{Json, extract::State};
 use serde_json::Value;
 use std::sync::OnceLock;
-
-use crate::error::Result;
-use crate::routes::handler::{self, AppState, EndpointConfig};
 
 /// Endpoint configuration for OpenAI-compatible endpoints
 fn openai_config() -> &'static EndpointConfig {

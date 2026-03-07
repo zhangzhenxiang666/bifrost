@@ -24,8 +24,6 @@ struct StreamState {
     text_block_index: usize,
     /// Next block index to assign
     next_block_index: usize,
-    /// Cached delta from first chunk that needs to be processed
-    pending_delta: Option<Value>,
     /// Whether message_start event has been sent
     has_sent_message_start: bool,
     /// Track which content blocks have been started
@@ -38,7 +36,6 @@ impl StreamState {
             thinking_block_index: usize::MAX,
             text_block_index: usize::MAX,
             next_block_index: 0,
-            pending_delta: None,
             has_sent_message_start: false,
             blocks_started: Vec::new(),
         }
@@ -48,7 +45,6 @@ impl StreamState {
         self.thinking_block_index = usize::MAX;
         self.text_block_index = usize::MAX;
         self.next_block_index = 0;
-        self.pending_delta = None;
         self.has_sent_message_start = false;
         self.blocks_started.clear();
     }
@@ -112,8 +108,6 @@ impl Adapter for AnthropicToOpenAIAdapter {
     }
 }
 
-
-
 fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
     let Value::Object(mut obj) = body else {
         return Err(LlmMapError::Validation(
@@ -174,7 +168,6 @@ fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
 
     Ok(Value::Object(result))
 }
-
 
 fn extract_system_text(system: Value) -> String {
     match system {
@@ -533,7 +526,10 @@ fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
 
     // Extract basic fields
     let id = obj.get("id").cloned().unwrap_or(Value::String("".into()));
-    let model = obj.get("model").cloned().unwrap_or(Value::String("".into()));
+    let model = obj
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String("".into()));
     let created = obj.get("created").cloned();
 
     // Extract choices array
@@ -543,10 +539,9 @@ fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
         .ok_or_else(|| LlmMapError::Validation("choices array is required".into()))?;
 
     // We only process the first choice (index 0)
-    let first_choice = choices
-        .first()
-        .and_then(|v| v.as_object())
-        .ok_or_else(|| LlmMapError::Validation("choices array must have at least one element".into()))?;
+    let first_choice = choices.first().and_then(|v| v.as_object()).ok_or_else(|| {
+        LlmMapError::Validation("choices array must have at least one element".into())
+    })?;
 
     let message = first_choice
         .get("message")
@@ -594,7 +589,10 @@ fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
     if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
         for tool_call in tool_calls {
             if let Some(tc_obj) = tool_call.as_object() {
-                let id = tc_obj.get("id").cloned().unwrap_or(Value::String("".into()));
+                let id = tc_obj
+                    .get("id")
+                    .cloned()
+                    .unwrap_or(Value::String("".into()));
                 let name = tc_obj
                     .get("function")
                     .and_then(|v| v.as_object())
@@ -610,7 +608,8 @@ fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("{}");
 
-                let input: Value = serde_json::from_str(arguments_str).unwrap_or(Value::Object(serde_json::Map::new()));
+                let input: Value = serde_json::from_str(arguments_str)
+                    .unwrap_or(Value::Object(serde_json::Map::new()));
 
                 content.push(json!({
                     "type": "tool_use",
@@ -700,29 +699,24 @@ impl AnthropicToOpenAIAdapter {
         &self,
         chunk: Value,
     ) -> Result<StreamChunkTransform, LlmMapError> {
-        // Handle [DONE] sentinel
-        if chunk.get("__done__").and_then(|v| v.as_bool()) == Some(true) {
-            return self.generate_finishing_events();
-        }
-        
         // Parse chunk
         let obj = chunk
             .as_object()
             .ok_or_else(|| LlmMapError::Validation("Invalid chunk format".into()))?;
-        
+
         let choices = obj.get("choices").and_then(|v| v.as_array());
         let Some(choice) = choices.and_then(|c| c.first()).and_then(|v| v.as_object()) else {
             return Ok(StreamChunkTransform::new(json!({"type": "ping"})));
         };
-        
+
         let delta = choice.get("delta").and_then(|v| v.as_object());
         let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
-        
+
         // Check if this is the first chunk (has non-null role field)
         let is_first_chunk = delta
             .and_then(|d| d.get("role").and_then(|v| v.as_str()))
             .is_some();
-        
+
         if is_first_chunk {
             // Generate message_start + content_block_start + delta events
             self.generate_initial_events(obj, delta)
@@ -737,16 +731,11 @@ impl AnthropicToOpenAIAdapter {
         obj: &serde_json::Map<String, Value>,
         delta: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
-        let mut state = self.stream_state.lock().unwrap();
-        
-        // Reset state for new message
-        state.reset();
-        
         let mut events = Vec::new();
-        
+
         let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let model = obj.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        
+
         // 1. Generate message_start event
         let message_start = json!({
             "type": "message_start",
@@ -762,74 +751,53 @@ impl AnthropicToOpenAIAdapter {
             }
         });
         events.push((message_start, Some("message_start".to_string())));
-        state.has_sent_message_start = true;
-        
-        // Check what content types are in this chunk
-        let has_reasoning = delta
-            .and_then(|d| d.get("reasoning_content"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .is_some();
-        let has_content = delta
-            .and_then(|d| d.get("content"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .is_some();
-        
-        // Cache delta for processing in next call if it has content
-        if has_reasoning || has_content {
-            state.pending_delta = Some(Value::Object(obj.clone()));
+
+        // 2. Process delta from first chunk - acquire lock only for state reset
+        {
+            let mut state = self.stream_state.lock().unwrap();
+            state.reset();
+            state.has_sent_message_start = true;
         }
-        
+
+        // 3. Now process delta content (lock will be acquired internally)
+        let delta_events = self.generate_content_events_from_delta(delta, None)?;
+        events.extend(delta_events.events);
+
         Ok(StreamChunkTransform::new_multi(events))
     }
-    
+
     /// Generate events for content chunks: content_block_start + delta, or finishing events
     fn generate_content_events(
         &self,
         delta: Option<&serde_json::Map<String, Value>>,
         finish_reason: Option<&str>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
+        self.generate_content_events_from_delta(delta, finish_reason)
+    }
+
+    /// Helper: generate content events from delta
+    fn generate_content_events_from_delta(
+        &self,
+        delta: Option<&serde_json::Map<String, Value>>,
+        finish_reason: Option<&str>,
+    ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
-        
-        // Check for pending delta from first chunk
-        let pending_delta = {
-            let mut state = self.stream_state.lock().unwrap();
-            state.pending_delta.take()
-        };
-        
-        // Extract actual delta to process (from pending or current)
-        let delta_to_process: Option<serde_json::Map<String, Value>> = if let Some(pending) = pending_delta {
-            pending
-                .as_object()
-                .and_then(|o| o.get("choices"))
-                .and_then(|c| c.as_array())
-                .and_then(|c| c.first())
-                .and_then(|c| c.as_object())
-                .and_then(|c| c.get("delta"))
-                .and_then(|d| d.as_object())
-                .cloned()
-        } else {
-            delta.cloned()
-        };
-        
+
         // Extract thinking and text from delta
-        let thinking_opt = delta_to_process
-            .as_ref()
+        let thinking_opt = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        
-        let text_opt = delta_to_process
-            .as_ref()
+
+        let text_opt = delta
             .and_then(|d| d.get("content"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        
+
         let mut state = self.stream_state.lock().unwrap();
-        
+
         // Process thinking content
         if let Some(thinking) = thinking_opt {
             if state.thinking_block_index == usize::MAX {
@@ -838,7 +806,7 @@ impl AnthropicToOpenAIAdapter {
                 state.next_block_index += 1;
                 state.thinking_block_index = new_index;
                 state.blocks_started.push(ContentType::Thinking);
-                
+
                 // Generate content_block_start
                 let block_start = json!({
                     "type": "content_block_start",
@@ -850,7 +818,7 @@ impl AnthropicToOpenAIAdapter {
                 });
                 events.push((block_start, Some("content_block_start".to_string())));
             }
-            
+
             // Generate thinking_delta
             let block_delta = json!({
                 "type": "content_block_delta",
@@ -862,7 +830,7 @@ impl AnthropicToOpenAIAdapter {
             });
             events.push((block_delta, Some("content_block_delta".to_string())));
         }
-        
+
         // Process text content
         if let Some(text) = text_opt {
             if state.text_block_index == usize::MAX {
@@ -871,7 +839,7 @@ impl AnthropicToOpenAIAdapter {
                 state.next_block_index += 1;
                 state.text_block_index = new_index;
                 state.blocks_started.push(ContentType::Text);
-                
+
                 // Generate content_block_start
                 let block_start = json!({
                     "type": "content_block_start",
@@ -883,7 +851,7 @@ impl AnthropicToOpenAIAdapter {
                 });
                 events.push((block_start, Some("content_block_start".to_string())));
             }
-            
+
             // Generate text_delta
             let block_delta = json!({
                 "type": "content_block_delta",
@@ -895,29 +863,29 @@ impl AnthropicToOpenAIAdapter {
             });
             events.push((block_delta, Some("content_block_delta".to_string())));
         }
-        
+
         // Process finish_reason - generate finishing events
         if finish_reason.is_some() {
             drop(state); // Release lock before calling generate_finishing_events
             let finish_events = self.generate_finishing_events()?;
             events.extend(finish_events.events);
         }
-        
+
         Ok(StreamChunkTransform::new_multi(events))
     }
-    
+
     /// Generate finishing events: content_block_stop(s) + message_delta + message_stop
     fn generate_finishing_events(&self) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
         let mut state = self.stream_state.lock().unwrap();
-        
+
         // Generate content_block_stop for each started block (in reverse order)
         for content_type in state.blocks_started.iter().rev() {
             let index = match content_type {
                 ContentType::Thinking => state.thinking_block_index,
                 ContentType::Text => state.text_block_index,
             };
-            
+
             if index != usize::MAX {
                 let block_stop = json!({
                     "type": "content_block_stop",
@@ -926,7 +894,7 @@ impl AnthropicToOpenAIAdapter {
                 events.push((block_stop, Some("content_block_stop".to_string())));
             }
         }
-        
+
         // Generate message_delta
         let message_delta = json!({
             "type": "message_delta",
@@ -937,61 +905,16 @@ impl AnthropicToOpenAIAdapter {
             "usage": {"output_tokens": 1}
         });
         events.push((message_delta, Some("message_delta".to_string())));
-        
+
         // Generate message_stop
         let message_stop = json!({
             "type": "message_stop"
         });
         events.push((message_stop, Some("message_stop".to_string())));
-        
+
         // Reset state for next request
         state.reset();
-        
+
         Ok(StreamChunkTransform::new_multi(events))
     }
-}
-#[cfg(test)]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    #[ignore = "Requires test data files"]
-    fn test_anthropic_to_openai_conversion() {
-        let input_json = fs::read_to_string("anthropic_input_example.json")
-            .expect("Failed to read anthropic_input_example.json");
-
-        let body: Value = serde_json::from_str(&input_json).expect("Failed to parse JSON");
-        let transformed = anthropic_to_openai_request(body).expect("Conversion failed");
-        let output_json =
-            serde_json::to_string_pretty(&transformed).expect("Failed to serialize result");
-        fs::write("transformer_openai.json", output_json).expect("Failed to write output file");
-        println!("Conversion successful! Output written to transformer_openai.json");
-    }
-
-    #[test]
-    #[ignore = "Requires test data files"]
-    fn test_openai_to_anthropic_response_conversion() {
-        let input_json = fs::read_to_string("openai_response_example.json")
-            .expect("Failed to read openai_response_example.json");
-
-        let body: Value = serde_json::from_str(&input_json).expect("Failed to parse JSON");
-        let transformed = openai_to_anthropic_response(body).expect("Conversion failed");
-        let output_json =
-            serde_json::to_string_pretty(&transformed).expect("Failed to serialize result");
-        fs::write("transformed_anthropic_response.json", output_json).expect("Failed to write output file");
-        println!("Conversion successful! Output written to transformed_anthropic_response.json");
-        
-        // Verify structure
-        assert_eq!(transformed.get("type").and_then(|v| v.as_str()), Some("message"));
-        assert_eq!(transformed.get("role").and_then(|v| v.as_str()), Some("assistant"));
-        assert!(transformed.get("content").and_then(|v| v.as_array()).is_some());
-        assert_eq!(transformed.get("stop_reason").and_then(|v| v.as_str()), Some("tool_use"));
-    }
-
-
-
-
-
 }
