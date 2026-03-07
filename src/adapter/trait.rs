@@ -48,9 +48,12 @@ use async_trait::async_trait;
 ///         Ok(ResponseTransform::new(body))
 ///     }
 ///
+///
 ///     async fn transform_stream_chunk(
 ///         &self,
 ///         chunk: serde_json::Value,
+///         event: &str,
+///         provider_config: &ProviderConfig,
 ///     ) -> Result<StreamChunkTransform, Self::Error> {
 ///         Ok(StreamChunkTransform::new(chunk))
 ///     }
@@ -101,11 +104,12 @@ pub trait Adapter: Send + Sync {
     /// # Returns
     ///
     /// A [`ResponseTransform`] containing the modified response data.
+    #[allow(unused_variables)]
     async fn transform_response(
         &self,
         body: serde_json::Value,
-        _status: http::StatusCode,
-        _headers: &http::HeaderMap,
+        status: http::StatusCode,
+        headers: &http::HeaderMap,
     ) -> Result<ResponseTransform, Self::Error> {
         Ok(ResponseTransform::new(body))
     }
@@ -123,10 +127,11 @@ pub trait Adapter: Send + Sync {
     ///
     /// A [`StreamChunkTransform`] containing the modified chunk data.
     /// Use [`StreamChunkTransform::with_event`] to specify an SSE event type.
+    #[allow(unused_variables)]
     async fn transform_stream_chunk(
         &self,
         chunk: serde_json::Value,
-    ) -> Result<StreamChunkTransform, Self::Error> {
-        Ok(StreamChunkTransform::new(chunk))
-    }
+        event: &str,
+        provider_config: &ProviderConfig,
+    ) -> Result<StreamChunkTransform, Self::Error>;
 }

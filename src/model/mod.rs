@@ -52,25 +52,42 @@ impl ResponseTransform {
     }
 }
 
+/// Represents a transformed stream chunk with multiple events
 pub struct StreamChunkTransform {
-    pub data: serde_json::Value,
-    pub event: Option<String>,
+    /// List of (data, event_name) pairs - always kept in sync
+    pub events: Vec<(serde_json::Value, Option<String>)>,
 }
 
 impl StreamChunkTransform {
+    /// Create a transform with a single event (no event name)
     pub fn new(data: serde_json::Value) -> Self {
-        Self { data, event: None }
+        Self { 
+            events: vec![(data, None)], 
+        }
     }
 
-    pub fn with_event(mut self, event: impl Into<String>) -> Self {
-        self.event = Some(event.into());
-        self
+    /// Create a transform with a single event and event name
+    pub fn new_with_event(data: serde_json::Value, event: impl Into<String>) -> Self {
+        Self { 
+            events: vec![(data, Some(event.into()))], 
+        }
+    }
+
+    /// Create a transform with multiple events
+    pub fn new_multi(events: Vec<(serde_json::Value, Option<String>)>) -> Self {
+        Self { events }
+    }
+    
+    /// Get the first event's data (for adapter chain compatibility)
+    pub fn data(&self) -> Option<&serde_json::Value> {
+        self.events.first().map(|(data, _)| data)
+    }
+    
+    /// Get all events for final processing
+    pub fn into_events(self) -> Vec<(serde_json::Value, Option<String>)> {
+        self.events
     }
 }
-
-// ============================================================================
-// 单元测试
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -112,7 +129,7 @@ mod tests {
     fn test_stream_chunk_transform_new() {
         let data = serde_json::json!({"choices": []});
         let transform = StreamChunkTransform::new(data.clone());
-        assert_eq!(transform.data, data);
-        assert!(transform.event.is_none());
+        assert_eq!(transform.data(), Some(&data));
+        assert_eq!(transform.events.len(), 1);
     }
 }

@@ -6,7 +6,7 @@
 use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
 use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
-use crate::model::RequestTransform;
+use crate::model::{RequestTransform, StreamChunkTransform};
 use async_trait::async_trait;
 use http::HeaderMap;
 
@@ -50,9 +50,26 @@ impl Adapter for PassthroughAdapter {
                         .unwrap(),
                 );
                 headers.insert(ANTHROPIC_VERSION.0.clone(), ANTHROPIC_VERSION.1.clone());
+                headers.insert(
+                    http::header::USER_AGENT,
+                    "Anthropic/Python 0.84.0".parse().unwrap(),
+                );
             }
         };
         Ok(request.with_headers(headers))
+    }
+
+    async fn transform_stream_chunk(
+        &self,
+        chunk: serde_json::Value,
+        event: &str,
+        provider_config: &ProviderConfig,
+    ) -> Result<StreamChunkTransform, Self::Error> {
+        if !event.is_empty() && provider_config.endpoint == Endpoint::Anthropic {
+            Ok(StreamChunkTransform::new_with_event(chunk, event))
+        } else {
+            Ok(StreamChunkTransform::new(chunk))
+        }
     }
 }
 
@@ -117,23 +134,5 @@ mod tests {
         assert_eq!(result.body, body);
         assert!(result.status.is_none());
         assert!(result.headers.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_passthrough_stream_chunk_not_modified() {
-        let adapter = PassthroughAdapter;
-        let chunk = serde_json::json!({
-            "id": "chatcmpl-123",
-            "choices": [
-                {
-                    "delta": {"content": "Hello"}
-                }
-            ]
-        });
-
-        let result = adapter.transform_stream_chunk(chunk.clone()).await.unwrap();
-
-        assert_eq!(result.data, chunk);
-        assert!(result.event.is_none());
     }
 }

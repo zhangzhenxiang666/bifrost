@@ -2,12 +2,12 @@
 
 use crate::adapter::OnionExecutor;
 use crate::error::{LlmMapError, Result};
-use crate::provider::registry::ProviderRegistry;
 use crate::model::RequestTransform;
+use crate::provider::registry::ProviderRegistry;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use eventsource_stream::Eventsource;
-use futures::stream::StreamExt;
+use futures::{stream::StreamExt, TryStreamExt};
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -229,25 +229,53 @@ pub async fn process_stream_request(
     let sse_stream = response
         .bytes_stream()
         .eventsource()
-        .filter_map(move |event_result| {
+        .then(move |event_result| {
             let executor = executor.clone();
             async move {
                 match event_result {
                     Ok(event) => {
-                        if crate::utils::is_done_event(&event.data) {
-                            return None;
+                        // Skip [DONE] sentinel - standard OpenAI format to end stream
+                        if event.data.starts_with("[DONE]") {
+                            return Ok::<_, axum::BoxError>(futures::stream::iter(Vec::new()));
                         }
+                        
+                        // Parse chunk - let adapter handle any format
                         let chunk: Value = serde_json::from_str(&event.data)
                             .unwrap_or_else(|_| json!({"raw": event.data}));
-                        let transformed = executor.execute_stream_chunk(chunk).await.ok()?;
-                        let data = serde_json::to_string(&transformed.data)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        Some(Ok(Event::default().data(data)))
+                        
+                        // Transform through adapter chain
+                        let transform = executor
+                            .execute_stream_chunk(chunk, event.event)
+                            .await;
+                        
+                        // If transformation failed, skip this chunk (don't send error to client)
+                        let Ok(transform) = transform else {
+                            return Ok(futures::stream::iter(Vec::new()));
+                        };
+                        
+                        // Convert all events to SSE events
+                        let mut sse_events = Vec::new();
+                        for (data, event_name) in transform.events {
+                            let data_str = serde_json::to_string(&data)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            let mut sse_event = Event::default().data(data_str);
+                            if let Some(name) = event_name {
+                                sse_event = sse_event.event(name);
+                            }
+                            sse_events.push(Ok(sse_event));
+                        }
+                        
+                        Ok::<_, axum::BoxError>(futures::stream::iter(sse_events))
                     }
-                    Err(err) => Some(Err(axum::BoxError::from(err))),
+                    Err(_err) => {
+                        // On SSE parsing error, skip this chunk (don't send error to client)
+                        Ok::<_, axum::BoxError>(futures::stream::iter(Vec::new()))
+                    }
                 }
             }
-        });
+        })
+        .try_flatten()
+        .boxed();
 
     let mut headers = HeaderMap::new();
     headers.insert(

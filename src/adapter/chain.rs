@@ -44,7 +44,7 @@ impl OnionExecutor {
     /// #     type Error = LlmMapError;
     /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<llm_map::model::RequestTransform, Self::Error> { Ok(llm_map::model::RequestTransform::new(body)) }
     /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<llm_map::model::ResponseTransform, Self::Error> { Ok(llm_map::model::ResponseTransform::new(body)) }
-    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value) -> Result<llm_map::model::StreamChunkTransform, Self::Error> { Ok(llm_map::model::StreamChunkTransform::new(chunk)) }
+    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value, _event: &str, _provider_config: &ProviderConfig) -> Result<llm_map::model::StreamChunkTransform, Self::Error> { Ok(llm_map::model::StreamChunkTransform::new(chunk)) }
     /// # }
     /// # let provider_config = ProviderConfig {
     /// #     base_url: "https://api.example.com".to_string(),
@@ -193,20 +193,33 @@ impl OnionExecutor {
     pub async fn execute_stream_chunk(
         &self,
         chunk: serde_json::Value,
+        event: String,
     ) -> Result<StreamChunkTransform> {
         let mut current_chunk = chunk;
-        let mut current_event = None;
-        for adapter in self.adapters.iter().rev() {
+        let mut all_events = Vec::new();
+        
+        for (i, adapter) in self.adapters.iter().rev().enumerate() {
             let transform = adapter
-                .transform_stream_chunk(current_chunk)
+                .transform_stream_chunk(current_chunk.clone(), &event, &self.provider_config)
                 .await
                 .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
-            current_chunk = transform.data;
-            current_event = transform.event;
+            let is_last_adapter = i == self.adapters.len() - 1;
+            
+            if is_last_adapter {
+                // Last adapter: collect all events
+                all_events.extend(transform.events);
+            } else {
+                // Not last adapter: pass only first event to next adapter, collect the rest
+                if let Some(first_event) = transform.events.first() {
+                    current_chunk = first_event.0.clone();
+                }
+                // Collect remaining events (skip first)
+                let events: Vec<_> = transform.events.into_iter().skip(1).collect();
+                all_events.extend(events);
+            }
         }
-        let mut res = StreamChunkTransform::new(current_chunk);
-        res.event = current_event;
-        Ok(res)
+        
+        Ok(StreamChunkTransform::new_multi(all_events))
     }
 
     /// Get the number of adapters in the chain.
@@ -283,6 +296,8 @@ mod tests {
         async fn transform_stream_chunk(
             &self,
             chunk: serde_json::Value,
+            _event: &str,
+            _provider_config: &ProviderConfig,
         ) -> Result<crate::model::StreamChunkTransform> {
             Ok(crate::model::StreamChunkTransform::new(chunk))
         }

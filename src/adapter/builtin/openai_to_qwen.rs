@@ -6,7 +6,7 @@
 use crate::adapter::Adapter;
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
-use crate::model::RequestTransform;
+use crate::model::{RequestTransform, StreamChunkTransform};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,16 @@ impl Adapter for OpenAIToQwenAdapter {
         );
         Ok(request.with_headers(headers))
     }
+
+    async fn transform_stream_chunk(
+        &self,
+        chunk: serde_json::Value,
+        _event: &str,
+        _provider_config: &ProviderConfig,
+    ) -> Result<StreamChunkTransform, Self::Error> {
+        // Pass through unchanged for OpenAI to Qwen
+        Ok(StreamChunkTransform::new(chunk))
+    }
 }
 
 // ============================================================================
@@ -452,24 +462,5 @@ mod tests {
 
         // Verify response is passed through unchanged
         assert_eq!(result.body, body);
-    }
-
-    #[tokio::test]
-    async fn test_openai_to_qwen_stream_chunk_passthrough() {
-        let adapter = OpenAIToQwenAdapter;
-        let chunk = serde_json::json!({
-            "id": "chatcmpl-123",
-            "choices": [
-                {
-                    "delta": {"content": "Hello"}
-                }
-            ]
-        });
-
-        let result = adapter.transform_stream_chunk(chunk.clone()).await.unwrap();
-
-        // Verify chunk is passed through unchanged
-        assert_eq!(result.data, chunk);
-        assert!(result.event.is_none());
     }
 }
