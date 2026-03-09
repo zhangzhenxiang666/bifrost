@@ -3,8 +3,9 @@ use llm_map::config::Config;
 use llm_map::middleware::request_logger;
 use llm_map::provider::registry::ProviderRegistry;
 use llm_map::routes::{AppState, chat_completions, messages};
-use llm_map::utils::init_logging;
+use llm_map::util::init_logging;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
@@ -27,7 +28,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Create provider registry
     let registry = ProviderRegistry::from_config(&config);
-    let state = AppState { registry };
+    let state = AppState {
+        registry: Arc::new(registry),
+    };
 
     // Configure CORS - allow all origins for API access
     let cors = CorsLayer::new()

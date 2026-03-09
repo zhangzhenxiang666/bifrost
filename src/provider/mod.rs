@@ -4,4 +4,4 @@ pub mod client;
 pub mod registry;
 
 pub use client::HttpClient;
-pub use registry::{ProviderInfo, ProviderRegistry};
+pub use registry::ProviderRegistry;

@@ -6,6 +6,7 @@
 pub mod builtin;
 pub mod chain;
 pub mod r#trait;
+pub mod util;
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;

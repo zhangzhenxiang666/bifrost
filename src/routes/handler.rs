@@ -10,17 +10,20 @@ use eventsource_stream::Eventsource;
 use futures::stream::StreamExt;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Application state for route handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub registry: ProviderRegistry,
+    pub registry: Arc<ProviderRegistry>,
 }
 
 impl From<ProviderRegistry> for AppState {
     fn from(registry: ProviderRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry: Arc::new(registry),
+        }
     }
 }
 
@@ -117,7 +120,7 @@ pub async fn execute_provider_request(
         .get(provider_id)
         .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
 
-    let url = config.build_url(provider.base_url(), model_name);
+    let url = config.build_url(&provider.base_url, model_name);
 
     // Update model field to use model_name only (without provider prefix)
     // Safety: We just verified model exists at line 107-111
@@ -142,13 +145,13 @@ pub async fn execute_provider_request(
     let final_url = transform_url.unwrap_or(url);
 
     // Merge provider-configured body fields into the request body
-    if let Some(provider_body_fields) = provider.config().body.as_ref() {
+    if let Some(provider_body_fields) = provider.body.as_ref() {
         for body_entry in provider_body_fields {
             body[&body_entry.name] = body_entry.value.clone();
         }
     }
 
-    if let Some(phs) = provider.config().headers.as_ref() {
+    if let Some(phs) = provider.headers.as_ref() {
         phs.iter().for_each(|header_entry| {
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
@@ -159,11 +162,11 @@ pub async fn execute_provider_request(
     }
 
     if let Some(hs) = transform_headers {
-        final_headers.extend(hs);
+        crate::util::extend_overwrite(&mut final_headers, hs);
     }
 
     // Merge model-specific body fields if model is configured in provider.models
-    if let Some(models_config) = provider.config().models.as_ref()
+    if let Some(models_config) = provider.models.as_ref()
         && let Some(model_cfg) = models_config.iter().find(|m| m.name == model_name)
     {
         // Merge model-specific body fields
@@ -304,7 +307,7 @@ pub async fn process_stream_request(
         }
     }
 
-    let sse_response = crate::utils::create_sse_stream(sse_stream);
+    let sse_response = crate::util::create_sse_stream(sse_stream);
 
     Ok((status_code, headers, sse_response).into_response())
 }

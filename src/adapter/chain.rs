@@ -6,6 +6,8 @@
 //! - Request flow: Adapter A → Adapter B → Adapter C → Upstream
 //! - Response flow: Upstream → Adapter C → Adapter B → Adapter A → Client
 
+use std::collections::VecDeque;
+
 use http::HeaderMap;
 
 use crate::adapter::Adapter;
@@ -111,7 +113,7 @@ impl OnionExecutor {
                 current_url = new_url;
             }
             if let Some(new_headers) = transform.headers {
-                current_headers.extend(new_headers);
+                crate::util::extend_overwrite(&mut current_headers, new_headers);
             }
         }
 
@@ -195,30 +197,37 @@ impl OnionExecutor {
         chunk: serde_json::Value,
         event: String,
     ) -> Result<StreamChunkTransform> {
-        let mut current_chunk = chunk;
+        let mut current_chunks = VecDeque::new();
+        let mut next_chunks = VecDeque::new();
         let mut all_events = Vec::new();
-        
+
+        current_chunks.push_back((chunk, None));
+
         for (i, adapter) in self.adapters.iter().rev().enumerate() {
-            let transform = adapter
-                .transform_stream_chunk(current_chunk.clone(), &event, &self.provider_config)
-                .await
-                .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
-            let is_last_adapter = i == self.adapters.len() - 1;
-            
-            if is_last_adapter {
-                // Last adapter: collect all events
-                all_events.extend(transform.events);
-            } else {
-                // Not last adapter: pass only first event to next adapter, collect the rest
-                if let Some(first_event) = transform.events.first() {
-                    current_chunk = first_event.0.clone();
+            let is_last = i == self.adapters.len() - 1;
+
+            while let Some((ck, evt)) = current_chunks.pop_front() {
+                let evt_str = evt.as_deref().unwrap_or(event.as_str());
+
+                let results = adapter
+                    .transform_stream_chunk(ck, evt_str, &self.provider_config)
+                    .await
+                    .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
+
+                if is_last {
+                    all_events.extend(results.events);
+                } else {
+                    for (next_chunk, next_evt) in results.events {
+                        next_chunks.push_back((next_chunk, next_evt));
+                    }
                 }
-                // Collect remaining events (skip first)
-                let events: Vec<_> = transform.events.into_iter().skip(1).collect();
-                all_events.extend(events);
+            }
+
+            if !is_last {
+                std::mem::swap(&mut current_chunks, &mut next_chunks);
             }
         }
-        
+
         Ok(StreamChunkTransform::new_multi(all_events))
     }
 

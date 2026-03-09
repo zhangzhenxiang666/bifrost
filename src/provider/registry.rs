@@ -3,38 +3,14 @@
 //! This module provides the [`ProviderRegistry`] which manages provider configurations
 //! and builds adapter chains for request execution.
 
-use crate::adapter::builtin::{AnthropicToOpenAIAdapter, OpenAIToQwenAdapter};
+use crate::adapter::builtin::{
+    AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter,
+};
 use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
 use crate::config::{Config, ProviderConfig};
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
 use std::collections::HashMap;
-
-/// Provider information containing configuration and built adapters
-#[derive(Clone)]
-pub struct ProviderInfo(ProviderConfig);
-
-impl ProviderInfo {
-    /// Create a new provider info from configuration
-    pub fn new(config: ProviderConfig) -> Self {
-        Self(config)
-    }
-
-    /// Get the provider configuration
-    pub fn config(&self) -> &ProviderConfig {
-        &self.0
-    }
-
-    /// Get the base URL for this provider
-    pub fn base_url(&self) -> &str {
-        &self.0.base_url
-    }
-
-    /// Get the API key for this provider
-    pub fn api_key(&self) -> &str {
-        &self.0.api_key
-    }
-}
 
 /// Registry that manages provider configurations and builds adapter chains.
 ///
@@ -44,7 +20,7 @@ impl ProviderInfo {
 /// - Building adapter chains (OnionExecutor) for specific providers
 #[derive(Clone)]
 pub struct ProviderRegistry {
-    providers: HashMap<String, ProviderInfo>,
+    providers: HashMap<String, ProviderConfig>,
     http_client: HttpClient,
 }
 
@@ -77,7 +53,7 @@ impl ProviderRegistry {
 
         // Build provider info from config
         for (id, provider_config) in &config.provider {
-            providers.insert(id.clone(), ProviderInfo::new(provider_config.clone()));
+            providers.insert(id.clone(), provider_config.clone());
         }
 
         // Create HTTP client with 600 second timeout (10 minutes) and optional proxy
@@ -110,7 +86,7 @@ impl ProviderRegistry {
     ///     println!("Base URL: {}", provider.base_url());
     /// }
     /// ```
-    pub fn get(&self, id: &str) -> Option<&ProviderInfo> {
+    pub fn get(&self, id: &str) -> Option<&ProviderConfig> {
         self.providers.get(id)
     }
 
@@ -143,7 +119,7 @@ impl ProviderRegistry {
             LlmMapError::Provider(format!("Provider '{}' not found", provider_id))
         })?;
 
-        let provider_config = provider_info.config().clone();
+        let provider_config = provider_info.clone();
         let adapters = self.build_adapter_chain(&provider_config.adapter)?;
 
         Ok(OnionExecutor::new(adapters, provider_config))
@@ -173,7 +149,12 @@ impl ProviderRegistry {
                 let adapter: Box<dyn Adapter<Error = LlmMapError>> = match name.as_str() {
                     "passthrough" => Box::new(PassthroughAdapter),
                     "openai_to_qwen" | "openai-to-qwen" => Box::new(OpenAIToQwenAdapter),
-                    "anthropic_to_openai" | "anthropic-to-openai" => Box::new(AnthropicToOpenAIAdapter::new()),
+                    "anthropic_to_openai" | "anthropic-to-openai" => {
+                        Box::new(AnthropicToOpenAIAdapter::new())
+                    }
+                    "anthropic_to_qwen" | "anthropic-to-qwen" => {
+                        Box::new(AnthropicToQwenAdapter::new())
+                    }
                     _ => {
                         return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));
                     }
@@ -270,8 +251,8 @@ mod tests {
         assert!(provider.is_some());
 
         let provider = provider.unwrap();
-        assert_eq!(provider.base_url(), "https://api.test.com");
-        assert_eq!(provider.api_key(), "test-key");
+        assert_eq!(provider.base_url, "https://api.test.com");
+        assert_eq!(provider.api_key, "test-key");
     }
 
     #[test]
@@ -375,8 +356,7 @@ mod tests {
         let config = create_test_config();
         let registry = ProviderRegistry::from_config(&config);
 
-        let provider = registry.get("test-provider").unwrap();
-        let provider_config = provider.config();
+        let provider_config = registry.get("test-provider").unwrap();
 
         assert_eq!(provider_config.base_url, "https://api.test.com");
         assert_eq!(provider_config.api_key, "test-key");
@@ -423,15 +403,12 @@ mod tests {
         let registry = ProviderRegistry::from_config(&config);
         let provider_info = registry.get("custom-provider").unwrap();
 
-        assert_eq!(provider_info.config().headers.as_ref().unwrap().len(), 1);
-        assert_eq!(provider_info.config().body.as_ref().unwrap().len(), 1);
+        assert_eq!(provider_info.headers.as_ref().unwrap().len(), 1);
+        assert_eq!(provider_info.body.as_ref().unwrap().len(), 1);
         assert_eq!(
-            provider_info.config().headers.as_ref().unwrap()[0].name,
+            provider_info.headers.as_ref().unwrap()[0].name,
             "X-Custom-Header"
         );
-        assert_eq!(
-            provider_info.config().body.as_ref().unwrap()[0].name,
-            "custom_field"
-        );
+        assert_eq!(provider_info.body.as_ref().unwrap()[0].name, "custom_field");
     }
 }

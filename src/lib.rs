@@ -10,4 +10,4 @@ pub mod middleware;
 pub mod model;
 pub mod provider;
 pub mod routes;
-pub mod utils;
+pub mod util;

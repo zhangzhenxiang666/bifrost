@@ -36,6 +36,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tower::util::ServiceExt;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -63,7 +64,9 @@ mod tests {
     fn create_test_state(mock_server_uri: &str) -> AppState {
         let config = create_test_config(mock_server_uri);
         let registry = ProviderRegistry::from_config(&config);
-        AppState { registry }
+        AppState {
+            registry: Arc::new(registry),
+        }
     }
 
     #[tokio::test]
