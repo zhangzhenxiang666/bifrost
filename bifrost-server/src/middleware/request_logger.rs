@@ -86,8 +86,6 @@ pub async fn request_logger(
 
     if status_code.is_success() {
         info!("{}", log_message)
-    } else {
-        error!("{}", log_message)
     }
 
     response

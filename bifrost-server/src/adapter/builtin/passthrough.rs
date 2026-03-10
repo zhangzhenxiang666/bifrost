@@ -7,6 +7,7 @@ use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
 use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
 use crate::model::{RequestTransform, StreamChunkTransform};
+use crate::util;
 use async_trait::async_trait;
 use http::HeaderMap;
 
@@ -33,7 +34,10 @@ impl Adapter for PassthroughAdapter {
 
         match provider_config.endpoint {
             Endpoint::OpenAI => {
-                request.url = Some(format!("{}/chat/completions", provider_config.base_url));
+                request.url = Some(util::join_url_paths(
+                    &provider_config.base_url,
+                    "chat/completions",
+                ));
                 headers.insert(
                     http::header::AUTHORIZATION,
                     http::header::HeaderValue::from_bytes(
@@ -43,7 +47,10 @@ impl Adapter for PassthroughAdapter {
                 );
             }
             Endpoint::Anthropic => {
-                request.url = Some(format!("{}/v1/messages", provider_config.base_url));
+                request.url = Some(util::join_url_paths(
+                    &provider_config.base_url,
+                    "v1/messages",
+                ));
                 headers.insert(
                     X_API_KEY.clone(),
                     http::header::HeaderValue::from_bytes(provider_config.api_key.as_bytes())

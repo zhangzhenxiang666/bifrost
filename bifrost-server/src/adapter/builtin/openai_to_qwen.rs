@@ -6,7 +6,7 @@
 use crate::adapter::{Adapter, util};
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
-use crate::model::{RequestTransform, StreamChunkTransform};
+use crate::model::RequestTransform;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -70,24 +70,16 @@ impl Adapter for OpenAIToQwenAdapter {
             );
         }
 
-        let request = RequestTransform::new(body)
-            .with_url(format!("{}/chat/completions", provider_config.base_url));
+        let request = RequestTransform::new(body).with_url(crate::util::join_url_paths(
+            &provider_config.base_url,
+            "chat/completions",
+        ));
 
         // Add Qwen-specific headers using utility function
         let auth_header = format!("Bearer {}", access_token);
         let headers = util::add_qwen_headers(&auth_header)?;
 
         Ok(request.with_headers(headers))
-    }
-
-    async fn transform_stream_chunk(
-        &self,
-        chunk: serde_json::Value,
-        _event: &str,
-        _provider_config: &ProviderConfig,
-    ) -> Result<StreamChunkTransform, Self::Error> {
-        // Pass through unchanged for OpenAI to Qwen
-        Ok(StreamChunkTransform::new(chunk))
     }
 }
 

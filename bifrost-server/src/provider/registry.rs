@@ -37,8 +37,8 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use llm_map::config::Config;
-    /// use llm_map::provider::ProviderRegistry;
+    /// use bifrost::config::Config;
+    /// use bifrost::provider::ProviderRegistry;
     ///
     /// let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
@@ -78,8 +78,8 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use llm_map::config::Config;
-    /// # use llm_map::provider::ProviderRegistry;
+    /// # use bifrost::config::Config;
+    /// # use bifrost::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
     /// if let Some(provider) = registry.get("qwen-code") {
@@ -108,8 +108,8 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use llm_map::config::Config;
-    /// # use llm_map::provider::ProviderRegistry;
+    /// # use bifrost::config::Config;
+    /// # use bifrost::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
     /// let executor = registry.build_executor("qwen-code").unwrap();

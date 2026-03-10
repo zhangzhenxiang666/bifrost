@@ -1,0 +1,29 @@
+[package]
+name = "bifrost-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http.workspace = true
+urlencoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+
+
+[dev-dependencies]
+wiremock.workspace = true
+tempfile.workspace = true

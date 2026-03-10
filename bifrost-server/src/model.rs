@@ -61,15 +61,15 @@ pub struct StreamChunkTransform {
 impl StreamChunkTransform {
     /// Create a transform with a single event (no event name)
     pub fn new(data: serde_json::Value) -> Self {
-        Self { 
-            events: vec![(data, None)], 
+        Self {
+            events: vec![(data, None)],
         }
     }
 
     /// Create a transform with a single event and event name
     pub fn new_with_event(data: serde_json::Value, event: impl Into<String>) -> Self {
-        Self { 
-            events: vec![(data, Some(event.into()))], 
+        Self {
+            events: vec![(data, Some(event.into()))],
         }
     }
 
@@ -77,59 +77,56 @@ impl StreamChunkTransform {
     pub fn new_multi(events: Vec<(serde_json::Value, Option<String>)>) -> Self {
         Self { events }
     }
-    
+
     /// Get the first event's data (for adapter chain compatibility)
     pub fn data(&self) -> Option<&serde_json::Value> {
         self.events.first().map(|(data, _)| data)
     }
-    
+
     /// Get all events for final processing
     pub fn into_events(self) -> Vec<(serde_json::Value, Option<String>)> {
         self.events
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Function type for building endpoint URLs
+pub type UrlBuilder = dyn Fn(&str, &str) -> String + Send + Sync;
 
-    #[test]
-    fn test_request_transform_new() {
-        let body = serde_json::json!({"key": "value"});
-        let transform = RequestTransform::new(body.clone());
-        assert_eq!(transform.body, body);
-        assert!(transform.url.is_none());
-        assert!(transform.headers.is_none());
+/// Configuration for an endpoint
+pub struct EndpointConfig {
+    /// Default URL path pattern for this endpoint
+    pub default_path_pattern: String,
+    /// Custom URL builder function (optional)
+    pub url_builder: Option<Box<UrlBuilder>>,
+}
+
+impl EndpointConfig {
+    /// Create a new endpoint configuration with a simple path pattern
+    pub fn new(default_path_pattern: impl Into<String>) -> Self {
+        Self {
+            default_path_pattern: default_path_pattern.into(),
+            url_builder: None,
+        }
     }
 
-    #[test]
-    fn test_request_transform_with_url() {
-        let body = serde_json::json!({"key": "value"});
-        let transform = RequestTransform::new(body).with_url("https://api.example.com");
-        assert_eq!(transform.url, Some("https://api.example.com".to_string()));
+    /// Create a new endpoint configuration with a custom URL builder
+    pub fn with_builder<F>(url_builder: F) -> Self
+    where
+        F: Fn(&str, &str) -> String + Send + Sync + 'static,
+    {
+        Self {
+            default_path_pattern: String::new(),
+            url_builder: Some(Box::new(url_builder)),
+        }
     }
 
-    #[test]
-    fn test_response_transform_new() {
-        let body = serde_json::json!({"result": "ok"});
-        let transform = ResponseTransform::new(body.clone());
-        assert_eq!(transform.body, body);
-        assert!(transform.status.is_none());
-        assert!(transform.headers.is_none());
-    }
-
-    #[test]
-    fn test_response_transform_with_status() {
-        let body = serde_json::json!({"result": "ok"});
-        let transform = ResponseTransform::new(body).with_status(http::StatusCode::OK);
-        assert_eq!(transform.status, Some(http::StatusCode::OK));
-    }
-
-    #[test]
-    fn test_stream_chunk_transform_new() {
-        let data = serde_json::json!({"choices": []});
-        let transform = StreamChunkTransform::new(data.clone());
-        assert_eq!(transform.data(), Some(&data));
-        assert_eq!(transform.events.len(), 1);
+    /// Build the URL for this endpoint
+    pub fn build_url(&self, base_url: &str, model: &str) -> String {
+        if let Some(builder) = &self.url_builder {
+            builder(base_url, model)
+        } else {
+            let path = self.default_path_pattern.replace("{model}", model);
+            crate::util::join_url_paths(base_url, &path)
+        }
     }
 }

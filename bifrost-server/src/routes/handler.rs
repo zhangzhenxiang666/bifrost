@@ -2,79 +2,16 @@
 
 use crate::adapter::OnionExecutor;
 use crate::error::{LlmMapError, Result};
-use crate::model::RequestTransform;
-use crate::provider::registry::ProviderRegistry;
+use crate::model::{EndpointConfig, RequestTransform};
+use crate::util;
+use crate::state::AppState;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use eventsource_stream::Eventsource;
 use futures::stream::StreamExt;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use tokio::sync::mpsc;
-
-/// Application state for route handlers
-#[derive(Clone)]
-pub struct AppState {
-    pub registry: Arc<ProviderRegistry>,
-}
-
-impl From<ProviderRegistry> for AppState {
-    fn from(registry: ProviderRegistry) -> Self {
-        Self {
-            registry: Arc::new(registry),
-        }
-    }
-}
-
-/// Function type for building endpoint URLs
-pub type UrlBuilder = dyn Fn(&str, &str) -> String + Send + Sync;
-
-/// Configuration for an endpoint
-pub struct EndpointConfig {
-    /// Default URL path pattern for this endpoint
-    pub default_path_pattern: String,
-    /// Custom URL builder function (optional)
-    pub url_builder: Option<Box<UrlBuilder>>,
-}
-
-impl EndpointConfig {
-    /// Create a new endpoint configuration with a simple path pattern
-    pub fn new(default_path_pattern: impl Into<String>) -> Self {
-        Self {
-            default_path_pattern: default_path_pattern.into(),
-            url_builder: None,
-        }
-    }
-
-    /// Create a new endpoint configuration with a custom URL builder
-    pub fn with_builder<F>(url_builder: F) -> Self
-    where
-        F: Fn(&str, &str) -> String + Send + Sync + 'static,
-    {
-        Self {
-            default_path_pattern: String::new(),
-            url_builder: Some(Box::new(url_builder)),
-        }
-    }
-
-    /// Build the URL for this endpoint
-    pub fn build_url(&self, base_url: &str, model: &str) -> String {
-        if let Some(builder) = &self.url_builder {
-            builder(base_url, model)
-        } else {
-            let path = self.default_path_pattern.replace("{model}", model);
-            join_url_paths(base_url, &path)
-        }
-    }
-}
-
-/// Join two URL path components, handling slashes properly
-fn join_url_paths(base: &str, path: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    format!("{}/{}", base, path)
-}
 
 /// Context for processing provider responses
 pub struct RequestContext {
@@ -82,15 +19,6 @@ pub struct RequestContext {
     pub body: Value,
     pub headers: HeaderMap,
     pub executor: OnionExecutor,
-}
-
-/// Parse `provider@model` format into provider ID and model name
-pub fn parse_model(model: &str) -> Result<(&str, &str)> {
-    model.split_once('@').ok_or_else(|| {
-        LlmMapError::Validation(
-            "Invalid model format. Expected 'provider@model' format".to_string(),
-        )
-    })
 }
 
 /// Execute a provider request and return the transformed response
@@ -113,7 +41,7 @@ pub async fn execute_provider_request(
         .map(|s| s.to_string())
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
-    let (provider_id, model_name) = parse_model(&model_value)?;
+    let (provider_id, model_name) = util::parse_model(&model_value)?;
 
     let provider = state
         .registry
@@ -384,20 +312,20 @@ mod tests {
 
     #[test]
     fn test_parse_model_with_provider() {
-        let result = parse_model("qwen-code@gpt-4");
+        let result = util::parse_model("qwen-code@gpt-4");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ("qwen-code", "gpt-4"));
     }
 
     #[test]
     fn test_parse_model_without_provider() {
-        assert!(parse_model("gpt-4").is_err());
+        assert!(util::parse_model("gpt-4").is_err());
     }
 
     #[test]
     fn test_join_url_paths() {
         assert_eq!(
-            join_url_paths("https://api.example.com/", "/v1/chat"),
+            util::join_url_paths("https://api.example.com/", "/v1/chat"),
             "https://api.example.com/v1/chat"
         );
     }

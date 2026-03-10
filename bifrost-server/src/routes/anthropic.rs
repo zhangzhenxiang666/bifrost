@@ -1,20 +1,21 @@
-//! OpenAI-compatible route for chat completions endpoint
+//! Anthropic-compatible route for messages endpoint
 
-use crate::error::Result;
-use crate::routes::handler::{self, AppState, EndpointConfig};
+use crate::{error::Result, model::EndpointConfig};
+use crate::routes::handler;
+use crate::state::AppState;
 use axum::{Json, extract::State};
 use serde_json::Value;
 use std::sync::OnceLock;
 
-/// Endpoint configuration for OpenAI-compatible endpoints
-fn openai_config() -> &'static EndpointConfig {
+/// Endpoint configuration for Anthropic-compatible endpoints
+fn anthropic_config() -> &'static EndpointConfig {
     static CONFIG: OnceLock<EndpointConfig> = OnceLock::new();
-    CONFIG.get_or_init(|| EndpointConfig::new("/chat/completions"))
+    CONFIG.get_or_init(|| EndpointConfig::new("/v1/messages"))
 }
 
-/// OpenAI-compatible chat completions endpoint.
+/// Anthropic-compatible messages endpoint.
 #[axum::debug_handler]
-pub async fn chat_completions(
+pub async fn messages(
     State(state): State<AppState>,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
@@ -24,7 +25,7 @@ pub async fn chat_completions(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, &headers, body, openai_config(), is_stream).await
+    handler::handle_llm_request(&state, &headers, body, anthropic_config(), is_stream).await
 }
 
 #[cfg(test)]
@@ -48,7 +49,7 @@ mod tests {
             ProviderConfig {
                 base_url: mock_server_uri.to_string(),
                 api_key: "test-key".to_string(),
-                endpoint: Endpoint::OpenAI,
+                endpoint: Endpoint::Anthropic,
                 adapter: vec![],
                 headers: None,
                 body: None,
@@ -70,42 +71,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chat_completions_non_stream_request() {
+    async fn test_messages_non_stream_request() {
         let mock_server = MockServer::start().await;
         let expected_response = json!({
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello from mock server"
-                }
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": "Hello from mock server"
             }]
         });
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .and(header("Authorization", "Bearer test-key"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&expected_response))
             .mount(&mock_server)
             .await;
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(chat_completions),
-            )
+            .route("/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
                     "model": "test-provider@test-model",
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": false
                 }))
@@ -118,16 +116,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chat_completions_stream_request() {
+    async fn test_messages_stream_request() {
         let mock_server = MockServer::start().await;
         let sse_response =
-            "data: {\"id\":\"chatcmpl-123\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n
-data: {\"id\":\"chatcmpl-123\",\"choices\":[{\"delta\":{\"content\":\" World\"}}]}\n\n
-data: [DONE]\n\n";
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\"}}\n\n
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .and(header("Authorization", "Bearer test-key"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_response)
@@ -138,19 +137,17 @@ data: [DONE]\n\n";
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(chat_completions),
-            )
+            .route("/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
                     "model": "test-provider@test-model",
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": true
                 }))
@@ -163,21 +160,19 @@ data: [DONE]\n\n";
     }
 
     #[tokio::test]
-    async fn test_chat_completions_missing_model() {
+    async fn test_messages_missing_model() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(chat_completions),
-            )
+            .route("/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}]
                 }))
                 .unwrap(),
@@ -189,22 +184,20 @@ data: [DONE]\n\n";
     }
 
     #[tokio::test]
-    async fn test_chat_completions_invalid_model_format() {
+    async fn test_messages_invalid_model_format() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(chat_completions),
-            )
+            .route("/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
                     "model": "invalid-format",
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}]
                 }))
                 .unwrap(),
@@ -216,22 +209,20 @@ data: [DONE]\n\n";
     }
 
     #[tokio::test]
-    async fn test_chat_completions_provider_not_found() {
+    async fn test_messages_provider_not_found() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(chat_completions),
-            )
+            .route("/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
                     "model": "non-existent@test-model",
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}]
                 }))
                 .unwrap(),

@@ -1,65 +1,25 @@
-//! Adapter trait definition for LLM provider integrations
+//! Adapter module for LLM provider integrations
 //!
-//! This module defines the core [`Adapter`] trait that all LLM provider adapters must implement.
-//! The trait uses [`macro@async_trait`] to allow async methods in traits.
+//! This module provides the core trait and types for implementing LLM provider adapters.
+//! Adapters transform requests and responses between the internal format and provider-specific formats.
+
+pub mod builtin;
+pub mod chain;
+pub mod util;
 
 use crate::config::ProviderConfig;
 use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
-use async_trait::async_trait;
 
-/// Core trait for LLM provider adapters.
-///
-/// All LLM provider implementations (OpenAI, Anthropic, etc.) must implement this trait.
-/// The trait provides three transformation methods that handle the request/response lifecycle:
-///
-/// - [`transform_request`](Adapter::transform_request) - Transform outgoing requests
-/// - [`transform_response`](Adapter::transform_response) - Transform incoming responses
-/// - [`transform_stream_chunk`](Adapter::transform_stream_chunk) - Transform streaming chunks
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use async_trait::async_trait;
-/// use llm_map::adapter::Adapter;
-/// use llm_map::config::{Endpoint, ProviderConfig};
-/// use llm_map::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
-///
-/// struct MyAdapter;
-///
-/// #[async_trait]
-/// impl Adapter for MyAdapter {
-///     type Error = llm_map::error::LlmMapError;
-///
-///     async fn transform_request(
-///         &self,
-///         body: serde_json::Value,
-///         provider_config: &ProviderConfig,
-///         headers: &http::HeaderMap,
-///     ) -> Result<RequestTransform, Self::Error> {
-///         Ok(RequestTransform::new(body))
-///     }
-///
-///     async fn transform_response(
-///         &self,
-///         body: serde_json::Value,
-///         status: http::StatusCode,
-///         headers: &http::HeaderMap,
-///     ) -> Result<ResponseTransform, Self::Error> {
-///         Ok(ResponseTransform::new(body))
-///     }
-///
-///
-///     async fn transform_stream_chunk(
-///         &self,
-///         chunk: serde_json::Value,
-///         event: &str,
-///         provider_config: &ProviderConfig,
-///     ) -> Result<StreamChunkTransform, Self::Error> {
-///         Ok(StreamChunkTransform::new(chunk))
-///     }
-/// }
+pub use builtin::PassthroughAdapter;
+pub use chain::OnionExecutor;
 
-#[async_trait]
+pub static X_API_KEY: http::HeaderName = http::header::HeaderName::from_static("x-api-key");
+pub static ANTHROPIC_VERSION: (http::HeaderName, http::header::HeaderValue) = (
+    http::header::HeaderName::from_static("anthropic-version"),
+    http::header::HeaderValue::from_static("2023-06-01"),
+);
+
+#[async_trait::async_trait]
 pub trait Adapter: Send + Sync {
     /// The error type returned by this adapter.
     ///
@@ -133,5 +93,7 @@ pub trait Adapter: Send + Sync {
         chunk: serde_json::Value,
         event: &str,
         provider_config: &ProviderConfig,
-    ) -> Result<StreamChunkTransform, Self::Error>;
+    ) -> Result<StreamChunkTransform, Self::Error> {
+        Ok(StreamChunkTransform::new(chunk))
+    }
 }

@@ -1,26 +1,33 @@
-use crate::{
-    adapter::Adapter,
-    adapter::util::{self, ContentType, OpenAIStreamState},
-    config::ProviderConfig,
-    error::LlmMapError,
-    model::{RequestTransform, ResponseTransform, StreamChunkTransform},
-};
+//! Anthropic to Qwen adapter - transforms Anthropic requests to Qwen API format
+//!
+//! This adapter combines:
+//! 1. Anthropic → OpenAI request transformation (using shared utils)
+//! 2. OpenAI → Qwen header transformation (using shared utils)
+//! 3. Qwen OpenAI-format response → Anthropic response transformation
+//!
+//! The adapter chain is: Anthropic → OpenAI → Qwen
+
+use crate::adapter::Adapter;
+use crate::adapter::util::{self, ContentType, OpenAIStreamState};
+use crate::config::ProviderConfig;
+use crate::error::LlmMapError;
+use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 use async_trait::async_trait;
-use http::HeaderMap;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
-pub struct AnthropicToOpenAIAdapter {
+pub struct AnthropicToQwenAdapter {
+    /// Unified stream state for OpenAI → Anthropic stream conversion
     stream_state: Mutex<OpenAIStreamState>,
 }
 
-impl Default for AnthropicToOpenAIAdapter {
+impl Default for AnthropicToQwenAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AnthropicToOpenAIAdapter {
+impl AnthropicToQwenAdapter {
     pub fn new() -> Self {
         Self {
             stream_state: Mutex::new(OpenAIStreamState::new()),
@@ -29,28 +36,66 @@ impl AnthropicToOpenAIAdapter {
 }
 
 #[async_trait]
-impl Adapter for AnthropicToOpenAIAdapter {
+impl Adapter for AnthropicToQwenAdapter {
     type Error = LlmMapError;
+
     async fn transform_request(
         &self,
         body: Value,
         provider_config: &ProviderConfig,
         _headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error> {
-        let body = util::anthropic_to_openai_request(body)?;
-        let mut headers = HeaderMap::new();
+        // Step 1: Transform Anthropic request to OpenAI format
+        let openai_body = util::anthropic_to_openai_request(body)?;
 
-        headers.insert(
-            http::header::AUTHORIZATION,
-            http::header::HeaderValue::from_bytes(
-                format!("Bearer {}", provider_config.api_key).as_bytes(),
+        // Step 2: Initialize OAuth credentials (same as OpenAIToQwenAdapter)
+        if util::OAUTH_CREDS_MANAGER.get().is_none() {
+            let oauth_file = util::get_oauth_file_path()?;
+            let creds = util::OAuthCredentials::from_file(&oauth_file).map_err(|e| {
+                LlmMapError::Validation(format!("Failed to load OAuth credentials: {}", e))
+            })?;
+
+            let manager = util::OAuthCredentialsManager::new(creds);
+
+            if util::OAUTH_CREDS_MANAGER.set(manager).is_err() {
+                // Another thread initialized first, that's fine
+            }
+        }
+
+        // Step 3: Ensure token is valid (refresh if expired)
+        let manager = util::OAUTH_CREDS_MANAGER.get().ok_or_else(|| {
+            LlmMapError::Validation(
+                "OAuth credentials manager not initialized. This should not happen.".to_string(),
             )
-            .unwrap(),
-        );
+        })?;
 
-        Ok(RequestTransform::new(body)
+        manager.ensure_valid_token().await?;
+        let access_token = manager.get_access_token();
+
+        // Step 4: For streaming requests, add stream_options to include usage
+        let mut final_body = openai_body;
+        if let Some(stream) = final_body.get("stream").and_then(|v| v.as_bool())
+            && stream
+            && let Some(obj) = final_body.as_object_mut()
+        {
+            obj.insert(
+                "stream_options".to_string(),
+                json!({
+                    "include_usage": true
+                }),
+            );
+        }
+
+        // Step 5: Add Qwen-specific headers
+        let auth_header = format!("Bearer {}", access_token);
+        let headers = util::add_qwen_headers(&auth_header)?;
+
+        Ok(RequestTransform::new(final_body)
             .with_headers(headers)
-            .with_url(format!("{}/chat/completions", provider_config.base_url)))
+            .with_url(crate::util::join_url_paths(
+                &provider_config.base_url,
+                "chat/completions",
+            )))
     }
 
     async fn transform_response(
@@ -59,6 +104,7 @@ impl Adapter for AnthropicToOpenAIAdapter {
         _status: http::StatusCode,
         _headers: &http::HeaderMap,
     ) -> Result<ResponseTransform, Self::Error> {
+        // OpenAI response → Anthropic response
         let body = util::openai_to_anthropic_response(body)?;
         Ok(ResponseTransform::new(body))
     }
@@ -69,17 +115,19 @@ impl Adapter for AnthropicToOpenAIAdapter {
         _event: &str,
         _provider_config: &ProviderConfig,
     ) -> Result<StreamChunkTransform, Self::Error> {
+        // Qwen OpenAI-format stream → Anthropic stream
         self.openai_stream_to_anthropic_stream(chunk)
     }
 }
 
 // ==================== OpenAI Stream → Anthropic Stream Conversion ====================
 
-impl AnthropicToOpenAIAdapter {
+impl AnthropicToQwenAdapter {
     fn openai_stream_to_anthropic_stream(
         &self,
         chunk: Value,
     ) -> Result<StreamChunkTransform, LlmMapError> {
+        // Parse chunk
         let obj = chunk
             .as_object()
             .ok_or_else(|| LlmMapError::Validation("Invalid chunk format".into()))?;
@@ -92,6 +140,7 @@ impl AnthropicToOpenAIAdapter {
         let delta = choice.get("delta").and_then(|v| v.as_object());
         let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
 
+        // Check if this is the first chunk (has non-null role field)
         let is_first_chunk = delta
             .and_then(|d| d.get("role").and_then(|v| v.as_str()))
             .is_some();
@@ -113,6 +162,7 @@ impl AnthropicToOpenAIAdapter {
         let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let model = obj.get("model").and_then(|v| v.as_str()).unwrap_or("");
 
+        // 1. Generate message_start event
         let message_start = json!({
             "type": "message_start",
             "message": {
@@ -128,12 +178,14 @@ impl AnthropicToOpenAIAdapter {
         });
         events.push((message_start, Some("message_start".to_string())));
 
+        // 2. Reset state
         {
             let mut state = self.stream_state.lock().unwrap();
             state.reset();
             state.set_message_start_sent();
         }
 
+        // 3. Process delta content
         let delta_events = self.generate_content_events_from_delta(delta, None)?;
         events.extend(delta_events.events);
 
@@ -155,6 +207,7 @@ impl AnthropicToOpenAIAdapter {
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
 
+        // Extract thinking and text from delta
         let thinking_opt = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(|v| v.as_str())
@@ -169,6 +222,7 @@ impl AnthropicToOpenAIAdapter {
 
         let mut state = self.stream_state.lock().unwrap();
 
+        // Process thinking content
         if let Some(thinking) = thinking_opt {
             if state.thinking_block_index() == usize::MAX {
                 let new_index = state.increment_next_block_index();
@@ -196,6 +250,7 @@ impl AnthropicToOpenAIAdapter {
             events.push((block_delta, Some("content_block_delta".to_string())));
         }
 
+        // Process text content
         if let Some(text) = text_opt {
             if state.text_block_index() == usize::MAX {
                 let new_index = state.increment_next_block_index();
@@ -223,6 +278,7 @@ impl AnthropicToOpenAIAdapter {
             events.push((block_delta, Some("content_block_delta".to_string())));
         }
 
+        // Process finish_reason
         if finish_reason.is_some() {
             drop(state);
             let finish_events = self.generate_finishing_events()?;
@@ -236,6 +292,7 @@ impl AnthropicToOpenAIAdapter {
         let mut events = Vec::new();
         let mut state = self.stream_state.lock().unwrap();
 
+        // Generate content_block_stop for each started block (in reverse order)
         for content_type in state.blocks_started().iter().rev() {
             let index = match content_type {
                 ContentType::Thinking => state.thinking_block_index(),
@@ -251,6 +308,7 @@ impl AnthropicToOpenAIAdapter {
             }
         }
 
+        // Generate message_delta
         let message_delta = json!({
             "type": "message_delta",
             "delta": {
@@ -261,13 +319,146 @@ impl AnthropicToOpenAIAdapter {
         });
         events.push((message_delta, Some("message_delta".to_string())));
 
+        // Generate message_stop
         let message_stop = json!({
             "type": "message_stop"
         });
         events.push((message_stop, Some("message_stop".to_string())));
 
+        // Reset state
         state.reset();
 
         Ok(StreamChunkTransform::new_multi(events))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+
+    fn init_test_credentials() {
+        use chrono::Utc;
+
+        let future_date = Utc::now() + chrono::Duration::days(365);
+
+        let creds = util::OAuthCredentials {
+            access_token: "test_access_token_12345".to_string(),
+            token_type: "Bearer".to_string(),
+            refresh_token: Some("test_refresh_token_67890".to_string()),
+            resource_url: "portal.qwen.ai".to_string(),
+            expiry_date: future_date,
+        };
+
+        let manager = util::OAuthCredentialsManager::new(creds);
+        let _ = util::OAUTH_CREDS_MANAGER.set(manager);
+    }
+
+    fn create_test_config() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            api_key: "test-api-key".to_string(),
+            endpoint: crate::config::Endpoint::Anthropic,
+            adapter: vec![],
+            headers: None,
+            body: None,
+            models: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_to_qwen_request_transform() {
+        init_test_credentials();
+
+        let adapter = AnthropicToQwenAdapter::new();
+        let body = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+        let config = create_test_config();
+        let headers = HeaderMap::new();
+
+        let result = adapter
+            .transform_request(body, &config, &headers)
+            .await
+            .unwrap();
+
+        assert!(result.body.get("messages").is_some());
+        assert!(result.headers.is_some());
+
+        let headers = result.headers.unwrap();
+        assert_eq!(headers.get("Content-Type").unwrap(), "application/json");
+        assert_eq!(
+            headers.get("User-Agent").unwrap(),
+            "QwenCode/0.11.0 (linux; x64)"
+        );
+        assert_eq!(headers.get("X-DashScope-CacheControl").unwrap(), "enable");
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_to_qwen_response_transform() {
+        let adapter = AnthropicToQwenAdapter::new();
+        let body = json!({
+            "id": "chatcmpl-123",
+            "model": "qwen-coder",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello from Qwen"
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30
+            }
+        });
+        let status = http::StatusCode::OK;
+        let headers = HeaderMap::new();
+
+        let result = adapter
+            .transform_response(body, status, &headers)
+            .await
+            .unwrap();
+
+        assert_eq!(result.body["type"], "message");
+        assert_eq!(result.body["role"], "assistant");
+        assert!(result.body["content"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_to_qwen_streaming_request() {
+        init_test_credentials();
+
+        let adapter = AnthropicToQwenAdapter::new();
+        let body = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ],
+            "stream": true
+        });
+        let config = create_test_config();
+        let headers = HeaderMap::new();
+
+        let result = adapter
+            .transform_request(body, &config, &headers)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.body["stream_options"],
+            json!({
+                "include_usage": true
+            })
+        );
     }
 }
