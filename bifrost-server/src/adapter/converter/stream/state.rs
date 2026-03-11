@@ -122,6 +122,7 @@ impl OpenAIStreamState {
         self.next_block_index += 1;
         index
     }
+
     /// Set message_start as sent
     pub fn set_message_start_sent(&mut self) {
         self.has_sent_message_start = true;

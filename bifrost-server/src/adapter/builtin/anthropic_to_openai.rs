@@ -1,10 +1,8 @@
-use crate::{
-    adapter::Adapter,
-    adapter::util::{self, OpenAIStreamProcessor},
-    config::ProviderConfig,
-    error::LlmMapError,
-    model::{RequestTransform, ResponseTransform, StreamChunkTransform},
-};
+use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
+use crate::adapter::Adapter;
+use crate::config::ProviderConfig;
+use crate::error::LlmMapError;
+use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 use async_trait::async_trait;
 use http::HeaderMap;
 use serde_json::Value;
@@ -36,7 +34,7 @@ impl Adapter for AnthropicToOpenAIAdapter {
         provider_config: &ProviderConfig,
         _headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error> {
-        let body = util::anthropic_to_openai_request(body)?;
+        let body = converter::anthropic_openai::anthropic_to_openai_request(body)?;
         let mut headers = HeaderMap::new();
 
         headers.insert(
@@ -61,7 +59,7 @@ impl Adapter for AnthropicToOpenAIAdapter {
         _status: http::StatusCode,
         _headers: &http::HeaderMap,
     ) -> Result<ResponseTransform, Self::Error> {
-        let body = util::openai_to_anthropic_response(body)?;
+        let body = converter::anthropic_openai::openai_to_anthropic_response(body)?;
         Ok(ResponseTransform::new(body))
     }
 

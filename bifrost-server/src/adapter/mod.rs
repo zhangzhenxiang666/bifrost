@@ -2,16 +2,24 @@
 //!
 //! This module provides the core trait and types for implementing LLM provider adapters.
 //! Adapters transform requests and responses between the internal format and provider-specific formats.
+//!
+//! ## Modules
+//!
+//! - `builtin` - Built-in adapter implementations
+//! - `chain` - Onion-style adapter chain execution
+//! - `converter` - Shared format conversion utilities
+//! - `util` - Legacy utilities (deprecated, use `converter` instead)
 
 pub mod builtin;
 pub mod chain;
-pub mod util;
+pub mod converter;
 
 use crate::config::ProviderConfig;
 use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;
+pub use converter::stream::OpenAIStreamProcessor;
 
 pub static X_API_KEY: http::HeaderName = http::header::HeaderName::from_static("x-api-key");
 pub static ANTHROPIC_VERSION: (http::HeaderName, http::header::HeaderValue) = (

@@ -7,8 +7,8 @@
 //!
 //! The adapter chain is: Anthropic → OpenAI → Qwen
 
+use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
 use crate::adapter::Adapter;
-use crate::adapter::util::{self, OpenAIStreamProcessor};
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
@@ -45,24 +45,14 @@ impl Adapter for AnthropicToQwenAdapter {
         _headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error> {
         // Step 1: Transform Anthropic request to OpenAI format
-        let openai_body = util::anthropic_to_openai_request(body)?;
+        let openai_body = converter::anthropic_openai::anthropic_to_openai_request(body)?;
 
-        // Step 2: Initialize OAuth credentials (same as OpenAIToQwenAdapter)
-        if util::OAUTH_CREDS_MANAGER.get().is_none() {
-            let oauth_file = util::get_oauth_file_path()?;
-            let creds = util::OAuthCredentials::from_file(&oauth_file).map_err(|e| {
-                LlmMapError::Validation(format!("Failed to load OAuth credentials: {}", e))
-            })?;
-
-            let manager = util::OAuthCredentialsManager::new(creds);
-
-            if util::OAUTH_CREDS_MANAGER.set(manager).is_err() {
-                // Another thread initialized first, that's fine
-            }
-        }
+        // Step 2: Initialize OAuth credentials manager
+        converter::qwen::ensure_oauth_manager_initialized()?;
 
         // Step 3: Ensure token is valid (refresh if expired)
-        let manager = util::OAUTH_CREDS_MANAGER.get().ok_or_else(|| {
+
+        let manager = converter::qwen::OAUTH_CREDS_MANAGER.get().ok_or_else(|| {
             LlmMapError::Validation(
                 "OAuth credentials manager not initialized. This should not happen.".to_string(),
             )
@@ -87,7 +77,7 @@ impl Adapter for AnthropicToQwenAdapter {
 
         // Step 5: Add Qwen-specific headers
         let auth_header = format!("Bearer {}", access_token);
-        let headers = util::add_qwen_headers(&auth_header)?;
+        let headers = converter::qwen::add_qwen_headers(&auth_header)?;
 
         Ok(RequestTransform::new(final_body)
             .with_headers(headers)
@@ -104,7 +94,7 @@ impl Adapter for AnthropicToQwenAdapter {
         _headers: &http::HeaderMap,
     ) -> Result<ResponseTransform, Self::Error> {
         // OpenAI response → Anthropic response
-        let body = util::openai_to_anthropic_response(body)?;
+        let body = converter::anthropic_openai::openai_to_anthropic_response(body)?;
         Ok(ResponseTransform::new(body))
     }
 
@@ -129,7 +119,7 @@ mod tests {
 
         let future_date = Utc::now() + chrono::Duration::days(365);
 
-        let creds = util::OAuthCredentials {
+        let creds = converter::qwen::OAuthCredentials {
             access_token: "test_access_token_12345".to_string(),
             token_type: "Bearer".to_string(),
             refresh_token: Some("test_refresh_token_67890".to_string()),
@@ -137,8 +127,8 @@ mod tests {
             expiry_date: future_date,
         };
 
-        let manager = util::OAuthCredentialsManager::new(creds);
-        let _ = util::OAUTH_CREDS_MANAGER.set(manager);
+        let manager = converter::qwen::OAuthCredentialsManager::new(creds);
+        let _ = converter::qwen::OAUTH_CREDS_MANAGER.set(manager);
     }
 
     fn create_test_config() -> ProviderConfig {

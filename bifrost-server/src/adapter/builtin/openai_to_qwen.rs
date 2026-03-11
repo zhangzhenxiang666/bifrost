@@ -3,7 +3,8 @@
 //! This adapter transforms OpenAI-compatible requests to Qwen API format by adding
 //! the required headers and handling stream options.
 
-use crate::adapter::{Adapter, util};
+use crate::adapter::converter::qwen;
+use crate::adapter::Adapter;
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::RequestTransform;
@@ -33,22 +34,12 @@ impl Adapter for OpenAIToQwenAdapter {
         provider_config: &ProviderConfig,
         _headers: &http::HeaderMap,
     ) -> Result<RequestTransform, Self::Error> {
-        // Initialize credentials manager if not already loaded
-        if util::OAUTH_CREDS_MANAGER.get().is_none() {
-            let oauth_file = util::get_oauth_file_path()?;
-            let creds = util::OAuthCredentials::from_file(&oauth_file).map_err(|e| {
-                LlmMapError::Validation(format!("Failed to load OAuth credentials: {}", e))
-            })?;
-
-            let manager = util::OAuthCredentialsManager::new(creds);
-
-            if util::OAUTH_CREDS_MANAGER.set(manager).is_err() {
-                // Another thread initialized first, that's fine
-            }
-        }
+        // Initialize OAuth credentials manager
+        qwen::ensure_oauth_manager_initialized()?;
 
         // Ensure token is valid (refresh if expired)
-        let manager = util::OAUTH_CREDS_MANAGER.get().ok_or_else(|| {
+
+        let manager = qwen::OAUTH_CREDS_MANAGER.get().ok_or_else(|| {
             LlmMapError::Validation(
                 "OAuth credentials manager not initialized. This should not happen.".to_string(),
             )
@@ -77,7 +68,7 @@ impl Adapter for OpenAIToQwenAdapter {
 
         // Add Qwen-specific headers using utility function
         let auth_header = format!("Bearer {}", access_token);
-        let headers = util::add_qwen_headers(&auth_header)?;
+        let headers = qwen::add_qwen_headers(&auth_header)?;
 
         Ok(request.with_headers(headers))
     }
@@ -99,7 +90,7 @@ mod tests {
         // Create a future timestamp (1 year from now)
         let future_date = Utc::now() + chrono::Duration::days(365);
 
-        let creds = util::OAuthCredentials {
+        let creds = qwen::OAuthCredentials {
             access_token: "test_access_token_12345".to_string(),
             token_type: "Bearer".to_string(),
             refresh_token: Some("test_refresh_token_67890".to_string()),
@@ -108,8 +99,8 @@ mod tests {
         };
 
         // Initialize the static OnceLock for tests
-        let manager = util::OAuthCredentialsManager::new(creds);
-        let _ = util::OAUTH_CREDS_MANAGER.set(manager);
+        let manager = qwen::OAuthCredentialsManager::new(creds);
+        let _ = qwen::OAUTH_CREDS_MANAGER.set(manager);
     }
 
     fn create_test_config() -> ProviderConfig {

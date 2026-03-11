@@ -213,28 +213,37 @@ impl OAuthCredentialsManager {
 /// Global OAuth credentials manager instance
 pub static OAUTH_CREDS_MANAGER: OnceLock<OAuthCredentialsManager> = OnceLock::new();
 
-/// Helper function to add Qwen-specific headers to a request
-pub fn add_qwen_headers(auth_header: &str) -> Result<http::HeaderMap, LlmMapError> {
-    let mut headers = http::HeaderMap::new();
-    headers.insert(
-        http::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
-    );
-    headers.insert(
-        http::header::USER_AGENT,
-        "QwenCode/0.11.0 (linux; x64)".parse().unwrap(),
-    );
-    headers.insert(http::header::ACCEPT, "application/json".parse().unwrap());
-    headers.insert("X-DashScope-CacheControl", "enable".parse().unwrap());
-    headers.insert(
-        "X-DashScope-UserAgent",
-        "QwenCode/0.11.0 (linux; x64)".parse().unwrap(),
-    );
-    headers.insert("X-DashScope-AuthType", "qwen-oauth".parse().unwrap());
-    headers.insert(
-        http::header::AUTHORIZATION,
-        http::HeaderValue::from_str(auth_header)
-            .map_err(|e| LlmMapError::Validation(format!("Invalid authorization header: {}", e)))?,
-    );
-    Ok(headers)
+/// Initialize OAuth credentials manager from file
+/// 
+/// This function loads OAuth credentials from the default file path and initializes
+/// the global credentials manager. Safe to call from multiple threads - if already
+/// initialized, does nothing.
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Manager initialized successfully (or was already initialized)
+/// * `Err(LlmMapError)` - Failed to load credentials file
+/// 
+/// # Example
+/// 
+/// ```rust
+/// // In your adapter's transform_request method
+/// qwen::ensure_oauth_manager_initialized()?;
+/// let manager = qwen::OAUTH_CREDS_MANAGER.get().unwrap();
+/// manager.ensure_valid_token().await?;
+/// ```
+pub fn ensure_oauth_manager_initialized() -> Result<(), LlmMapError> {
+    if OAUTH_CREDS_MANAGER.get().is_none() {
+        let oauth_file = get_oauth_file_path()?;
+        let creds = OAuthCredentials::from_file(&oauth_file).map_err(|e| {
+            LlmMapError::Validation(format!("Failed to load OAuth credentials: {}", e))
+        })?;
+
+        let manager = OAuthCredentialsManager::new(creds);
+
+        if OAUTH_CREDS_MANAGER.set(manager).is_err() {
+            // Another thread initialized first, that's fine
+        }
+    }
+    Ok(())
 }

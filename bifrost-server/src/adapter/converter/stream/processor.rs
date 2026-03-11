@@ -1,15 +1,12 @@
-//! Common OpenAI to Anthropic stream conversion logic
-//!
-//! This module provides shared stream processing for adapters that convert
-//! OpenAI-format streaming responses to Anthropic-format streaming events.
+//! Stream processor for converting OpenAI-format streams to Anthropic-format events
 
-use crate::adapter::util::OpenAIStreamState;
+use crate::adapter::converter::stream::state::OpenAIStreamState;
 use crate::error::LlmMapError;
 use crate::model::StreamChunkTransform;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
-/// Stream processor for converting OpenAI-format streams to Anthropic-format events
+/// Stream processor for converting OpenAI-format stream chunks to Anthropic-format events
 pub struct OpenAIStreamProcessor {
     stream_state: Mutex<OpenAIStreamState>,
 }
