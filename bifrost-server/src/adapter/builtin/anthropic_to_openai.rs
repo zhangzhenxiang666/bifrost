@@ -1,5 +1,5 @@
-use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
 use crate::adapter::Adapter;
+use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};

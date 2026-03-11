@@ -7,8 +7,8 @@
 //!
 //! The adapter chain is: Anthropic → OpenAI → Qwen
 
-use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
 use crate::adapter::Adapter;
+use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
@@ -105,7 +105,8 @@ impl Adapter for AnthropicToQwenAdapter {
         _provider_config: &ProviderConfig,
     ) -> Result<StreamChunkTransform, Self::Error> {
         // Qwen OpenAI-format stream → Anthropic stream
-        self.stream_processor.openai_stream_to_anthropic_stream(chunk)
+        self.stream_processor
+            .openai_stream_to_anthropic_stream(chunk)
     }
 }
 
@@ -264,7 +265,10 @@ mod tests {
             }]
         });
 
-        let result = adapter.stream_processor.openai_stream_to_anthropic_stream(chunk).unwrap();
+        let result = adapter
+            .stream_processor
+            .openai_stream_to_anthropic_stream(chunk)
+            .unwrap();
         let events = result.events;
 
         // Should have: message_start, content_block_start (tool_use), content_block_delta

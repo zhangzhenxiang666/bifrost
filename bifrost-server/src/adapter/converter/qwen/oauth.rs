@@ -214,18 +214,18 @@ impl OAuthCredentialsManager {
 pub static OAUTH_CREDS_MANAGER: OnceLock<OAuthCredentialsManager> = OnceLock::new();
 
 /// Initialize OAuth credentials manager from file
-/// 
+///
 /// This function loads OAuth credentials from the default file path and initializes
 /// the global credentials manager. Safe to call from multiple threads - if already
 /// initialized, does nothing.
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Ok(())` - Manager initialized successfully (or was already initialized)
 /// * `Err(LlmMapError)` - Failed to load credentials file
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// // In your adapter's transform_request method
 /// qwen::ensure_oauth_manager_initialized()?;

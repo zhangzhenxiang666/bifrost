@@ -3,8 +3,8 @@
 //! This adapter transforms OpenAI-compatible requests to Qwen API format by adding
 //! the required headers and handling stream options.
 
-use crate::adapter::converter::qwen;
 use crate::adapter::Adapter;
+use crate::adapter::converter::qwen;
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::RequestTransform;

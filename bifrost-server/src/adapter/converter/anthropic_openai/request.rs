@@ -3,7 +3,7 @@
 //! This module provides functions to convert Anthropic API request format to OpenAI-compatible format.
 
 use crate::error::LlmMapError;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::message::{
     extract_system_text, transform_message_anthropic_to_openai,

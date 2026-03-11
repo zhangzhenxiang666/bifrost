@@ -42,6 +42,9 @@ impl OpenAIStreamProcessor {
         let delta = choice.get("delta").and_then(|v| v.as_object());
         let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
 
+        // Extract usage from chunk (may be present in any chunk, especially the last one)
+        let usage = obj.get("usage").and_then(|v| v.as_object());
+
         // Check if message_start has already been sent (reliable state-based check)
         let message_start_sent = {
             let state = self.stream_state.lock().unwrap();
@@ -49,17 +52,17 @@ impl OpenAIStreamProcessor {
         };
 
         if !message_start_sent {
-            let mut events = self.generate_initial_events(obj, delta)?.events;
+            let mut events = self.generate_initial_events(obj, delta, usage)?.events;
 
             // Handle finish_reason after generating initial events
             if let Some(reason) = finish_reason {
-                let finish_events = self.generate_finishing_events(Some(reason))?;
+                let finish_events = self.generate_finishing_events(Some(reason), usage)?;
                 events.extend(finish_events.events);
             }
 
             Ok(StreamChunkTransform::new_multi(events))
         } else {
-            self.generate_content_events(delta, finish_reason)
+            self.generate_content_events(delta, finish_reason, usage)
         }
     }
 
@@ -67,11 +70,25 @@ impl OpenAIStreamProcessor {
         &self,
         obj: &serde_json::Map<String, Value>,
         delta: Option<&serde_json::Map<String, Value>>,
+        usage: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
 
         let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let model = obj.get("model").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Extract input_tokens from usage, default to 0 if not available
+        let input_tokens = usage
+            .and_then(|u| u.get("prompt_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        // output_tokens in message_start is typically 0 or not set
+        // We'll use 1 as default for compatibility
+        let output_tokens = usage
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
 
         let message_start = json!({
             "type": "message_start",
@@ -83,7 +100,7 @@ impl OpenAIStreamProcessor {
                 "model": model,
                 "stop_reason": null,
                 "stop_sequence": null,
-                "usage": {"input_tokens": 0, "output_tokens": 1}
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
             }
         });
         events.push((message_start, Some("message_start".to_string())));
@@ -95,7 +112,7 @@ impl OpenAIStreamProcessor {
         }
 
         // Don't pass finish_reason here - it will be handled by the caller
-        let delta_events = self.generate_content_events_from_delta(delta, None)?;
+        let delta_events = self.generate_content_events_from_delta(delta, None, None)?;
         events.extend(delta_events.events);
 
         Ok(StreamChunkTransform::new_multi(events))
@@ -105,14 +122,16 @@ impl OpenAIStreamProcessor {
         &self,
         delta: Option<&serde_json::Map<String, Value>>,
         finish_reason: Option<&str>,
+        usage: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
-        self.generate_content_events_from_delta(delta, finish_reason)
+        self.generate_content_events_from_delta(delta, finish_reason, usage)
     }
 
     fn generate_content_events_from_delta(
         &self,
         delta: Option<&serde_json::Map<String, Value>>,
         finish_reason: Option<&str>,
+        usage: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
 
@@ -282,7 +301,7 @@ impl OpenAIStreamProcessor {
         // Process finish_reason
         if let Some(reason) = finish_reason {
             drop(state);
-            let finish_events = self.generate_finishing_events(Some(reason))?;
+            let finish_events = self.generate_finishing_events(Some(reason), usage)?;
             events.extend(finish_events.events);
         }
 
@@ -292,6 +311,7 @@ impl OpenAIStreamProcessor {
     fn generate_finishing_events(
         &self,
         finish_reason: Option<&str>,
+        usage: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
         let mut state = self.stream_state.lock().unwrap();
@@ -315,6 +335,12 @@ impl OpenAIStreamProcessor {
             _ => "end_turn",
         };
 
+        // Extract output_tokens from usage, default to 1 if not available
+        let output_tokens = usage
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
+
         // Generate message_delta
         let message_delta = json!({
             "type": "message_delta",
@@ -322,7 +348,7 @@ impl OpenAIStreamProcessor {
                 "stop_reason": stop_reason,
                 "stop_sequence": null
             },
-            "usage": {"output_tokens": 1}
+            "usage": {"output_tokens": output_tokens}
         });
         events.push((message_delta, Some("message_delta".to_string())));
 
@@ -514,5 +540,112 @@ mod tests {
 
         // Last event should be message_stop
         assert_eq!(events.last().unwrap().0["type"], "message_stop");
+    }
+
+    #[test]
+    fn test_usage_extraction_with_usage_in_message_start() {
+        let processor = OpenAIStreamProcessor::new();
+
+        // Chunk with usage information
+        let chunk = json!({
+            "id": "chatcmpl-123",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant"
+                },
+                "finish_reason": null
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150
+            }
+        });
+
+        let result = processor.openai_stream_to_anthropic_stream(chunk).unwrap();
+        let events = result.events;
+
+        // First event should be message_start with actual usage
+        assert_eq!(events[0].0["type"], "message_start");
+        assert_eq!(events[0].0["message"]["usage"]["input_tokens"], 100);
+        assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 50);
+    }
+
+    #[test]
+    fn test_usage_extraction_with_usage_in_final_chunk() {
+        let processor = OpenAIStreamProcessor::new();
+
+        // First chunk without usage
+        let chunk1 = json!({
+            "id": "chatcmpl-123",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant",
+                    "content": "Hello"
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let result1 = processor.openai_stream_to_anthropic_stream(chunk1).unwrap();
+        let events1 = result1.events;
+
+        // message_start should have default usage
+        assert_eq!(events1[0].0["message"]["usage"]["input_tokens"], 0);
+        assert_eq!(events1[0].0["message"]["usage"]["output_tokens"], 1);
+
+        // Second chunk with usage and finish_reason
+        let chunk2 = json!({
+            "id": "chatcmpl-123",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 200,
+                "completion_tokens": 80,
+                "total_tokens": 280
+            }
+        });
+
+        let result2 = processor.openai_stream_to_anthropic_stream(chunk2).unwrap();
+        let events2 = result2.events;
+
+        // Find message_delta event - should have actual output_tokens
+        let message_delta = events2.iter().find(|e| e.0["type"] == "message_delta");
+        assert!(message_delta.is_some());
+        let message_delta = message_delta.unwrap();
+        assert_eq!(message_delta.0["usage"]["output_tokens"], 80);
+    }
+
+    #[test]
+    fn test_usage_extraction_without_usage_fallback() {
+        let processor = OpenAIStreamProcessor::new();
+
+        // Chunk without usage information
+        let chunk = json!({
+            "id": "chatcmpl-123",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant"
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let result = processor.openai_stream_to_anthropic_stream(chunk).unwrap();
+        let events = result.events;
+
+        // Should use fallback values
+        assert_eq!(events[0].0["message"]["usage"]["input_tokens"], 0);
+        assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 1);
     }
 }

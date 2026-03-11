@@ -3,7 +3,7 @@
 //! This module provides functions to convert OpenAI API response format to Anthropic format.
 
 use crate::error::LlmMapError;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Transform usage from OpenAI format to Anthropic format
 pub fn transform_usage_openai_to_anthropic(usage: Option<&Value>) -> Value {

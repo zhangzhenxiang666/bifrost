@@ -7,5 +7,5 @@ mod state;
 
 pub mod processor;
 
-pub use state::OpenAIStreamState;
 pub use processor::OpenAIStreamProcessor;
+pub use state::OpenAIStreamState;

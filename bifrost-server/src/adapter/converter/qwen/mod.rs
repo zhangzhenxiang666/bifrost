@@ -11,4 +11,7 @@ pub mod headers;
 pub mod oauth;
 
 pub use headers::*;
-pub use oauth::{OAuthCredentials, OAuthCredentialsManager, OAUTH_CREDS_MANAGER, ensure_oauth_manager_initialized};
+pub use oauth::{
+    OAUTH_CREDS_MANAGER, OAuthCredentials, OAuthCredentialsManager,
+    ensure_oauth_manager_initialized,
+};

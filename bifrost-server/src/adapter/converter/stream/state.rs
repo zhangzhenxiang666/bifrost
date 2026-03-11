@@ -29,7 +29,6 @@ pub struct OpenAIStreamState {
     /// Map OpenAI tool_call index → Anthropic block index
     tool_call_map: HashMap<usize, usize>,
     /// Current active block index (usize::MAX = no active block)
-    /// Used to track when to send content_block_stop before starting new block
     current_active_block_index: usize,
 }
 
