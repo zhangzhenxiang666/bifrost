@@ -187,10 +187,12 @@ pub async fn process_stream_request(
                     for (data, event_name) in transform.events {
                         let data_str =
                             serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
-                        let mut sse_event = Event::default().data(data_str);
+                        let mut sse_event = Event::default();
+                        // Set event name first, then data - ensures event: comes before data: in SSE output
                         if let Some(name) = event_name {
                             sse_event = sse_event.event(name);
                         }
+                        sse_event = sse_event.data(data_str);
                         // Send event - if receiver is dropped, stop processing
                         if tx.send(Ok(sse_event)).await.is_err() {
                             break;
