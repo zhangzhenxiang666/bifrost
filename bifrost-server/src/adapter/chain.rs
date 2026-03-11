@@ -37,16 +37,16 @@ impl OnionExecutor {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use bifrost::adapter::{Adapter, OnionExecutor};
-    /// use bifrost::config::{Endpoint, ProviderConfig};
-    /// use bifrost::error::LlmMapError;
+    /// use bifrost_server::adapter::{Adapter, OnionExecutor};
+    /// use bifrost_server::config::{Endpoint, ProviderConfig};
+    /// use bifrost_server::error::LlmMapError;
     /// # struct MyAdapter;
     /// # #[async_trait::async_trait]
     /// # impl Adapter for MyAdapter {
     /// #     type Error = LlmMapError;
-    /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<bifrost::model::RequestTransform, Self::Error> { Ok(bifrost::model::RequestTransform::new(body)) }
-    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<bifrost::model::ResponseTransform, Self::Error> { Ok(bifrost::model::ResponseTransform::new(body)) }
-    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value, _event: &str, _provider_config: &ProviderConfig) -> Result<bifrost::model::StreamChunkTransform, Self::Error> { Ok(bifrost::model::StreamChunkTransform::new(chunk)) }
+    /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<bifrost_server::model::RequestTransform, Self::Error> { Ok(bifrost_server::model::RequestTransform::new(body)) }
+    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<bifrost_server::model::ResponseTransform, Self::Error> { Ok(bifrost_server::model::ResponseTransform::new(body)) }
+    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value, _event: &str, _provider_config: &ProviderConfig) -> Result<bifrost_server::model::StreamChunkTransform, Self::Error> { Ok(bifrost_server::model::StreamChunkTransform::new(chunk)) }
     /// # }
     /// # let provider_config = ProviderConfig {
     /// #     base_url: "https://api.example.com".to_string(),

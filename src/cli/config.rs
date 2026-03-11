@@ -124,6 +124,11 @@ mod tests {
         let path = get_today_log_path();
         assert!(path.is_ok());
         let path = path.unwrap();
-        assert!(path.file_name().unwrap().to_string_lossy().ends_with(".log"));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".log")
+        );
     }
 }

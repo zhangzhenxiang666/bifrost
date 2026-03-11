@@ -1,7 +1,8 @@
 //! CLI command implementations
 
 use super::config::{
-    cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path, get_today_log_path, init_bifrost_dir, BIFROST_DIR,
+    BIFROST_DIR, cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path,
+    get_today_log_path, init_bifrost_dir,
 };
 use super::{print_error, print_header, print_info, print_success, print_warning};
 use anyhow::{Context, Result};
@@ -407,7 +408,7 @@ pub fn cmd_status() -> Result<()> {
         println!(
             "  {} To start the server, run: {}",
             "→".cyan(),
-        "bifrost start".bold()
+            "bifrost start".bold()
         );
     }
 

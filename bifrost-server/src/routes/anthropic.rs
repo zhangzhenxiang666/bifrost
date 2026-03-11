@@ -1,8 +1,8 @@
 //! Anthropic-compatible route for messages endpoint
 
-use crate::{error::Result, model::EndpointConfig};
 use crate::routes::handler;
 use crate::state::AppState;
+use crate::{error::Result, model::EndpointConfig};
 use axum::{Json, extract::State};
 use serde_json::Value;
 use std::sync::OnceLock;

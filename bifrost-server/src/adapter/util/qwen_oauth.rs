@@ -5,8 +5,8 @@
 
 use crate::error::LlmMapError;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use dirs;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
@@ -63,13 +63,11 @@ impl OAuthCredentials {
 pub fn get_oauth_file_path() -> Result<PathBuf, LlmMapError> {
     let home = dirs::home_dir().ok_or_else(|| {
         LlmMapError::Validation(
-            "Home directory not found. Set HOME or USERPROFILE environment variable"
-                .to_string(),
+            "Home directory not found. Set HOME or USERPROFILE environment variable".to_string(),
         )
     })?;
     Ok(home.join(".qwen").join("oauth_creds.json"))
 }
-
 
 /// OAuth credentials manager with refresh token support
 pub struct OAuthCredentialsManager {

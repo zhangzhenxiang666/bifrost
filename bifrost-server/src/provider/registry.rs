@@ -37,8 +37,8 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use bifrost::config::Config;
-    /// use bifrost::provider::ProviderRegistry;
+    /// use bifrost_server::config::Config;
+    /// use bifrost_server::provider::ProviderRegistry;
     ///
     /// let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
@@ -78,12 +78,12 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use bifrost::config::Config;
-    /// # use bifrost::provider::ProviderRegistry;
+    /// # use bifrost_server::config::Config;
+    /// # use bifrost_server::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
     /// if let Some(provider) = registry.get("qwen-code") {
-    ///     println!("Base URL: {}", provider.base_url());
+    ///     println!("Base URL: {}", provider.base_url);
     /// }
     /// ```
     pub fn get(&self, id: &str) -> Option<&ProviderConfig> {
@@ -108,8 +108,8 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use bifrost::config::Config;
-    /// # use bifrost::provider::ProviderRegistry;
+    /// # use bifrost_server::config::Config;
+    /// # use bifrost_server::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
     /// let executor = registry.build_executor("qwen-code").unwrap();

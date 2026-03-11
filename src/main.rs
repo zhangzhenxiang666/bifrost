@@ -2,9 +2,9 @@
 
 mod cli;
 
-use clap::builder::styling::{AnsiColor, Effects};
-use clap::builder::Styles;
 use clap::Parser;
+use clap::builder::Styles;
+use clap::builder::styling::{AnsiColor, Effects};
 use cli::Commands;
 
 fn styles() -> Styles {

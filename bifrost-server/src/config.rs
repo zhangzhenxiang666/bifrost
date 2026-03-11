@@ -252,7 +252,7 @@ impl Config {
     ///
     /// # Example
     /// ```no_run
-    /// use bifrost::config::Config;
+    /// use bifrost_server::config::Config;
     /// let config = Config::from_file("config.toml").unwrap();
     /// ```
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Config, LlmMapError> {
