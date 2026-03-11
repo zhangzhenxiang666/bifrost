@@ -4,12 +4,34 @@ use crate::adapter::converter::stream::state::OpenAIStreamState;
 use crate::error::LlmMapError;
 use crate::model::StreamChunkTransform;
 use serde_json::{Value, json};
-use std::sync::Mutex;
+use std::cell::UnsafeCell;
 
-/// Stream processor for converting OpenAI-format stream chunks to Anthropic-format events
+/// Stream processor for converting OpenAI-format stream chunks to Anthropic-format events.
+///
+/// # Safety Invariant
+///
+/// `stream_state` is wrapped in `UnsafeCell` to allow interior mutability without
+/// any locking overhead. This is sound under the following architectural guarantee:
+///
+/// - One `OpenAIStreamProcessor` instance is created per request.
+/// - All method calls on that instance occur sequentially; no two call-sites
+///   ever execute concurrently on the same instance.
+///
+/// Consequently there is never more than one live `&` or `&mut` reference to
+/// `stream_state` at a time, which is the only condition `UnsafeCell` requires.
+/// Violating this invariant is undefined behavior.
 pub struct OpenAIStreamProcessor {
-    stream_state: Mutex<OpenAIStreamState>,
+    stream_state: UnsafeCell<OpenAIStreamState>,
 }
+
+// SAFETY: The processor is never shared across threads concurrently.
+// Each request owns its own instance and drives it from a single async task.
+unsafe impl Sync for OpenAIStreamProcessor {}
+
+// SAFETY: Ownership may cross thread boundaries at Tokio await points, but only
+// one thread holds the processor at any given moment, and `OpenAIStreamState`
+// contains no thread-local state.
+unsafe impl Send for OpenAIStreamProcessor {}
 
 impl Default for OpenAIStreamProcessor {
     fn default() -> Self {
@@ -18,14 +40,33 @@ impl Default for OpenAIStreamProcessor {
 }
 
 impl OpenAIStreamProcessor {
-    /// Create a new stream processor
     pub fn new() -> Self {
         Self {
-            stream_state: Mutex::new(OpenAIStreamState::new()),
+            stream_state: UnsafeCell::new(OpenAIStreamState::new()),
         }
     }
 
-    /// Convert an OpenAI-format stream chunk to Anthropic-format events
+    /// Immutable access — use for all reads.
+    ///
+    /// SAFETY: No `&mut` obtained via `state_mut` may be alive simultaneously.
+    /// Upheld because every `state_mut()` call is a single-expression statement
+    /// whose returned reference expires before the next statement executes.
+    #[inline(always)]
+    fn state(&self) -> &OpenAIStreamState {
+        unsafe { &*self.stream_state.get() }
+    }
+
+    /// Mutable access — call only for the single mutation, then let the
+    /// reference expire immediately at the semicolon / end of the expression.
+    ///
+    /// SAFETY: Same guarantee as above; never store the returned reference
+    /// across any other `state()` / `state_mut()` call.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    fn state_mut(&self) -> &mut OpenAIStreamState {
+        unsafe { &mut *self.stream_state.get() }
+    }
+
     pub fn openai_stream_to_anthropic_stream(
         &self,
         chunk: Value,
@@ -36,30 +77,19 @@ impl OpenAIStreamProcessor {
 
         let choices = obj.get("choices").and_then(|v| v.as_array());
         let Some(choice) = choices.and_then(|c| c.first()).and_then(|v| v.as_object()) else {
-            return Ok(StreamChunkTransform::new(json!({"type": "ping"})));
+            return Ok(StreamChunkTransform::new(json!({ "type": "ping" })));
         };
 
         let delta = choice.get("delta").and_then(|v| v.as_object());
         let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
-
-        // Extract usage from chunk (may be present in any chunk, especially the last one)
         let usage = obj.get("usage").and_then(|v| v.as_object());
 
-        // Check if message_start has already been sent (reliable state-based check)
-        let message_start_sent = {
-            let state = self.stream_state.lock().unwrap();
-            state.has_sent_message_start()
-        };
-
-        if !message_start_sent {
+        // Read-only check — no &mut needed here.
+        if !self.state().has_sent_message_start() {
             let mut events = self.generate_initial_events(obj, delta, usage)?.events;
-
-            // Handle finish_reason after generating initial events
             if let Some(reason) = finish_reason {
-                let finish_events = self.generate_finishing_events(Some(reason), usage)?;
-                events.extend(finish_events.events);
+                events.extend(self.generate_finishing_events(Some(reason), usage)?.events);
             }
-
             Ok(StreamChunkTransform::new_multi(events))
         } else {
             self.generate_content_events(delta, finish_reason, usage)
@@ -76,45 +106,43 @@ impl OpenAIStreamProcessor {
 
         let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let model = obj.get("model").and_then(|v| v.as_str()).unwrap_or("");
-
-        // Extract input_tokens from usage, default to 0 if not available
         let input_tokens = usage
             .and_then(|u| u.get("prompt_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
-
-        // output_tokens in message_start is typically 0 or not set
-        // We'll use 1 as default for compatibility
         let output_tokens = usage
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as u32;
 
-        let message_start = json!({
-            "type": "message_start",
-            "message": {
-                "id": id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": model,
-                "stop_reason": null,
-                "stop_sequence": null,
-                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
-            }
-        });
-        events.push((message_start, Some("message_start".to_string())));
+        events.push((
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": model,
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens
+                    }
+                }
+            }),
+            Some("message_start".to_string()),
+        ));
 
-        {
-            let mut state = self.stream_state.lock().unwrap();
-            state.reset();
-            state.set_message_start_sent();
-        }
+        // Two independent mutations; each &mut expires at its own semicolon.
+        self.state_mut().reset();
+        self.state_mut().set_message_start_sent();
 
-        // Don't pass finish_reason here - it will be handled by the caller
-        let delta_events = self.generate_content_events_from_delta(delta, None, None)?;
-        events.extend(delta_events.events);
-
+        events.extend(
+            self.generate_content_events_from_delta(delta, None, None)?
+                .events,
+        );
         Ok(StreamChunkTransform::new_multi(events))
     }
 
@@ -135,121 +163,119 @@ impl OpenAIStreamProcessor {
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
 
-        // Extract thinking content
         let thinking_opt = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        // Extract text content
         let text_opt = delta
             .and_then(|d| d.get("content"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        // Extract tool_calls
         let tool_calls_opt = delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(|v| v.as_array())
             .cloned();
 
-        let mut state = self.stream_state.lock().unwrap();
-
-        // Process thinking content
+        // ── Thinking block ────────────────────────────────────────────────────
         if let Some(thinking) = thinking_opt {
-            if state.thinking_block_index() == usize::MAX {
-                let new_index = state.increment_next_block_index();
-                state.start_thinking_block(new_index);
-
-                // Close previous active block before starting new one
-                if let Some(old_index) = state.set_current_active_block(new_index) {
-                    let block_stop = json!({
-                        "type": "content_block_stop",
-                        "index": old_index
-                    });
-                    events.push((block_stop, Some("content_block_stop".to_string())));
+            // Read: is this the first thinking chunk?
+            if self.state().thinking_block_index() == usize::MAX {
+                // Each line below is one independent mutation; &mut expires at ";".
+                let new_index = self.state_mut().increment_next_block_index();
+                self.state_mut().start_thinking_block(new_index);
+                if let Some(old) = self.state_mut().set_current_active_block(new_index) {
+                    events.push((
+                        json!({
+                            "type": "content_block_stop",
+                            "index": old
+                        }),
+                        Some("content_block_stop".to_string()),
+                    ));
                 }
-
-                let block_start = json!({
-                    "type": "content_block_start",
-                    "index": new_index,
-                    "content_block": {
-                        "type": "thinking",
-                        "thinking": ""
-                    }
-                });
-                events.push((block_start, Some("content_block_start".to_string())));
+                events.push((
+                    json!({
+                        "type": "content_block_start",
+                        "index": new_index,
+                        "content_block": {
+                            "type": "thinking",
+                            "thinking": ""
+                        }
+                    }),
+                    Some("content_block_start".to_string()),
+                ));
             }
-
-            let block_delta = json!({
-                "type": "content_block_delta",
-                "index": state.thinking_block_index(),
-                "delta": {
-                    "type": "thinking_delta",
-                    "thinking": thinking
-                }
-            });
-            events.push((block_delta, Some("content_block_delta".to_string())));
+            // Read: stable index for the delta event.
+            let idx = self.state().thinking_block_index();
+            events.push((
+                json!({
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {
+                        "type": "thinking_delta",
+                        "thinking": thinking
+                    }
+                }),
+                Some("content_block_delta".to_string()),
+            ));
         }
 
-        // Process text content
+        // ── Text block ────────────────────────────────────────────────────────
         if let Some(text) = text_opt {
-            if state.text_block_index() == usize::MAX {
-                let new_index = state.increment_next_block_index();
-                state.start_text_block(new_index);
-
-                // Close previous active block before starting new one
-                if let Some(old_index) = state.set_current_active_block(new_index) {
-                    let block_stop = json!({
-                        "type": "content_block_stop",
-                        "index": old_index
-                    });
-                    events.push((block_stop, Some("content_block_stop".to_string())));
+            if self.state().text_block_index() == usize::MAX {
+                let new_index = self.state_mut().increment_next_block_index();
+                self.state_mut().start_text_block(new_index);
+                if let Some(old) = self.state_mut().set_current_active_block(new_index) {
+                    events.push((
+                        json!({
+                            "type": "content_block_stop",
+                            "index": old
+                        }),
+                        Some("content_block_stop".to_string()),
+                    ));
                 }
-
-                let block_start = json!({
-                    "type": "content_block_start",
-                    "index": new_index,
-                    "content_block": {
-                        "type": "text",
-                        "text": ""
-                    }
-                });
-                events.push((block_start, Some("content_block_start".to_string())));
+                events.push((
+                    json!({
+                        "type": "content_block_start",
+                        "index": new_index,
+                        "content_block": {
+                            "type": "text",
+                            "text": ""
+                        }
+                    }),
+                    Some("content_block_start".to_string()),
+                ));
             }
-
-            let block_delta = json!({
-                "type": "content_block_delta",
-                "index": state.text_block_index(),
-                "delta": {
-                    "type": "text_delta",
-                    "text": text
-                }
-            });
-            events.push((block_delta, Some("content_block_delta".to_string())));
+            let idx = self.state().text_block_index();
+            events.push((
+                json!({
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": text
+                    }
+                }),
+                Some("content_block_delta".to_string()),
+            ));
         }
 
-        // Process tool_calls
+        // ── Tool calls ────────────────────────────────────────────────────────
         if let Some(tool_calls) = tool_calls_opt {
             for tool_call_value in tool_calls {
                 let tool_call = tool_call_value
                     .as_object()
                     .ok_or_else(|| LlmMapError::Validation("Invalid tool_call format".into()))?;
 
-                // Get tool_call index from OpenAI
                 let tool_call_index = tool_call
                     .get("index")
                     .and_then(|v| v.as_u64())
                     .map(|i| i as usize)
                     .ok_or_else(|| LlmMapError::Validation("tool_call missing index".into()))?;
 
-                // Get or create block index for this tool_call
-                let (block_index, needs_start) =
-                    state.get_or_create_tool_call_block(tool_call_index);
-
-                // Get tool_call id and name (only present in first chunk)
                 let id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let name = tool_call
                     .get("function")
@@ -258,51 +284,60 @@ impl OpenAIStreamProcessor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                // Close previous active block before starting new tool_call block
-                if needs_start {
-                    if let Some(old_index) = state.set_current_active_block(block_index) {
-                        let block_stop = json!({
-                            "type": "content_block_stop",
-                            "index": old_index
-                        });
-                        events.push((block_stop, Some("content_block_stop".to_string())));
-                    }
+                // Mutate: get-or-create; &mut expires at the semicolon.
+                let (block_index, needs_start) = self
+                    .state_mut()
+                    .get_or_create_tool_call_block(tool_call_index);
 
-                    let block_start = json!({
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": id,
-                            "name": name,
-                            "input": {}
-                        }
-                    });
-                    events.push((block_start, Some("content_block_start".to_string())));
+                if needs_start {
+                    if let Some(old) = self.state_mut().set_current_active_block(block_index) {
+                        events.push((
+                            json!({
+                                "type": "content_block_stop",
+                                "index": old
+                            }),
+                            Some("content_block_stop".to_string()),
+                        ));
+                    }
+                    events.push((
+                        json!({
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": {
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": {}
+                            }
+                        }),
+                        Some("content_block_start".to_string()),
+                    ));
                 }
 
-                // Process function arguments (incremental JSON)
-                if let Some(function) = tool_call.get("function").and_then(|v| v.as_object())
-                    && let Some(arguments) = function.get("arguments").and_then(|v| v.as_str())
+                if let Some(arguments) = tool_call
+                    .get("function")
+                    .and_then(|v| v.as_object())
+                    .and_then(|v| v.get("arguments"))
+                    .and_then(|v| v.as_str())
                 {
-                    let block_delta = json!({
-                        "type": "content_block_delta",
-                        "index": block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": arguments
-                        }
-                    });
-                    events.push((block_delta, Some("content_block_delta".to_string())));
+                    events.push((
+                        json!({
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": arguments
+                            }
+                        }),
+                        Some("content_block_delta".to_string()),
+                    ));
                 }
             }
         }
 
-        // Process finish_reason
+        // ── Finish ────────────────────────────────────────────────────────────
         if let Some(reason) = finish_reason {
-            drop(state);
-            let finish_events = self.generate_finishing_events(Some(reason), usage)?;
-            events.extend(finish_events.events);
+            events.extend(self.generate_finishing_events(Some(reason), usage)?.events);
         }
 
         Ok(StreamChunkTransform::new_multi(events))
@@ -314,19 +349,18 @@ impl OpenAIStreamProcessor {
         usage: Option<&serde_json::Map<String, Value>>,
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::new();
-        let mut state = self.stream_state.lock().unwrap();
 
-        // Close the currently active block (if any)
-        // All previous blocks have already been closed during stream processing
-        if let Some(old_index) = state.set_current_active_block(usize::MAX) {
-            let block_stop = json!({
-                "type": "content_block_stop",
-                "index": old_index
-            });
-            events.push((block_stop, Some("content_block_stop".to_string())));
+        // Mutate: close active block; &mut expires at the semicolon.
+        if let Some(old) = self.state_mut().set_current_active_block(usize::MAX) {
+            events.push((
+                json!({
+                    "type": "content_block_stop",
+                    "index": old
+                }),
+                Some("content_block_stop".to_string()),
+            ));
         }
 
-        // Map finish_reason to stop_reason
         let stop_reason = match finish_reason {
             Some("tool_calls") => "tool_use",
             Some("stop") => "end_turn",
@@ -335,31 +369,31 @@ impl OpenAIStreamProcessor {
             _ => "end_turn",
         };
 
-        // Extract output_tokens from usage, default to 1 if not available
         let output_tokens = usage
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as u32;
 
-        // Generate message_delta
-        let message_delta = json!({
-            "type": "message_delta",
-            "delta": {
-                "stop_reason": stop_reason,
-                "stop_sequence": null
-            },
-            "usage": {"output_tokens": output_tokens}
-        });
-        events.push((message_delta, Some("message_delta".to_string())));
+        events.push((
+            json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": stop_reason,
+                    "stop_sequence": null
+                },
+                "usage": {
+                    "output_tokens": output_tokens
+                }
+            }),
+            Some("message_delta".to_string()),
+        ));
+        events.push((
+            json!({ "type": "message_stop" }),
+            Some("message_stop".to_string()),
+        ));
 
-        // Generate message_stop
-        let message_stop = json!({
-            "type": "message_stop"
-        });
-        events.push((message_stop, Some("message_stop".to_string())));
-
-        // Reset state
-        state.reset();
+        // Mutate: reset for safety; &mut expires at the semicolon.
+        self.state_mut().reset();
 
         Ok(StreamChunkTransform::new_multi(events))
     }
@@ -387,7 +421,7 @@ mod tests {
                         "type": "function",
                         "function": {
                             "name": "search",
-                            "arguments": "{\"query\": \"hello\"}"
+                            "arguments": "{\"query\": \"hello\"}",
                         }
                     }]
                 },
