@@ -44,22 +44,22 @@ pub enum Commands {
 
 /// Print a formatted info message with colored label
 pub fn print_info(label: &str, value: &str) {
-    println!("  {:<18} {}", label.bold().cyan(), value);
+    println!("{:<18} {}", label.bold().cyan(), value);
 }
 
 /// Print a formatted success message with green checkmark
 pub fn print_success(message: &str) {
-    println!("  {} {}", "✓".green().bold(), message.green());
+    println!("{} {}", "✓".green().bold(), message.green());
 }
 
 /// Print a formatted error message with red X
 pub fn print_error(message: &str) {
-    eprintln!("  {} {}", "✗".red().bold(), message.red());
+    eprintln!("{} {}", "✗".red().bold(), message.red());
 }
 
 /// Print a formatted warning message with yellow triangle
 pub fn print_warning(message: &str) {
-    println!("  {} {}", "⚠".yellow().bold(), message.yellow());
+    println!("{} {}", "⚠".yellow().bold(), message.yellow());
 }
 
 /// Print a section header with purple background

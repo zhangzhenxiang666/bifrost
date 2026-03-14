@@ -1,8 +1,8 @@
 //! CLI command implementations
 
 use super::config::{
-    cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path, get_today_log_path,
-    init_bifrost_dir,
+    BIFROST_DIR, cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path,
+    get_today_log_path, init_bifrost_dir,
 };
 use super::{
     print_error, print_header, print_info, print_kv_table, print_process_table, print_success,
@@ -10,13 +10,11 @@ use super::{
 };
 use anyhow::{Context, Result};
 use colored::Colorize;
-use daemonize::Daemonize;
 use std::fs;
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::Command;
 use sysinfo::{Pid, System};
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 /// Get the current process PID from PID file
 pub fn get_stored_pid() -> Option<u32> {
@@ -69,6 +67,44 @@ pub fn get_process_info(pid: u32) -> Option<(String, f32, f32)> {
     None
 }
 
+/// Server configuration (minimal structure for CLI needs)
+#[derive(Debug, Clone)]
+struct ServerConfig {
+    port: u16,
+    proxy: Option<String>,
+}
+
+impl ServerConfig {
+    /// Load configuration from TOML file
+    fn from_file(path: &PathBuf) -> Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let config: toml::Value = toml::from_str(&content)?;
+
+        let port = config
+            .get("server")
+            .and_then(|s| s.get("port"))
+            .and_then(|v| v.as_integer())
+            .unwrap_or(5564) as u16;
+
+        let proxy = config
+            .get("server")
+            .and_then(|s| s.get("proxy"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(ServerConfig { port, proxy })
+    }
+}
+
+/// Get the bifrost-server binary path (default: ~/.bifrost/bin/bifrost-server)
+fn get_server_binary_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(BIFROST_DIR)
+        .join("bin")
+        .join("bifrost-server")
+}
+
 /// Start command implementation
 pub fn cmd_start() -> Result<()> {
     println!("\n{}", "LLM Map - Start Server".bold().white().on_blue());
@@ -96,16 +132,9 @@ fn cmd_start_internal() -> Result<()> {
             && let Some((name, memory, cpu)) = get_process_info(pid)
         {
             let config_path = get_config_path()?;
-            if let Ok(config) = bifrost_server::config::Config::from_file(&config_path) {
-                let proxy = config.server.proxy.as_deref().unwrap_or("None");
-                print_process_table(
-                    pid,
-                    &name,
-                    memory,
-                    cpu,
-                    Some(config.server.port),
-                    Some(proxy),
-                );
+            if let Ok(config) = ServerConfig::from_file(&config_path) {
+                let proxy = config.proxy.as_deref().unwrap_or("None");
+                print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
             } else {
                 print_process_table(pid, &name, memory, cpu, None, None);
             }
@@ -125,17 +154,16 @@ fn cmd_start_internal() -> Result<()> {
     // Load configuration
     let config_path = get_config_path()?;
     let config = if config_path.exists() && fs::metadata(&config_path)?.len() > 0 {
-        bifrost_server::config::Config::from_file(&config_path)
-            .context("Failed to load configuration")?
+        ServerConfig::from_file(&config_path)?
     } else {
         let default_config = r#"[server]
 port = 5564
 "#;
         fs::write(&config_path, default_config)?;
-        bifrost_server::config::Config::from_file(&config_path)?
+        ServerConfig::from_file(&config_path)?
     };
 
-    let port = config.server.port;
+    let port = config.port;
 
     // Check if port is already in use
     if is_port_in_use(port) {
@@ -158,17 +186,23 @@ port = 5564
         ("Log file", log_file.display().to_string()),
         (
             "Proxy",
-            config
-                .server
-                .proxy
-                .clone()
-                .unwrap_or_else(|| "None".to_string()),
+            config.proxy.clone().unwrap_or_else(|| "None".to_string()),
         ),
     ];
     print_kv_table(&config_rows);
     println!();
     println!("  {} Output log: {}", "→".cyan(), stdout_path.display());
     println!("  {} Error log: {}", "→".cyan(), stderr_path.display());
+
+    // Find server binary
+    let server_binary = get_server_binary_path();
+    println!(
+        "  {} Server binary: {}",
+        "→".cyan(),
+        server_binary.display()
+    );
+    println!();
+
     // Open files for stdout and stderr
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
@@ -179,56 +213,45 @@ port = 5564
         .append(true)
         .open(&stderr_path)?;
 
-    // Daemonize the process
-    let daemonize = Daemonize::new()
-        .pid_file(&pid_file)
-        .chown_pid_file(false)
-        .working_directory(std::env::current_dir()?)
-        .user(whoami::username().as_str())
+    // Start the server as a child process
+    let child = Command::new(&server_binary)
         .stdout(stdout_file)
-        .stderr(stderr_file);
+        .stderr(stderr_file)
+        .spawn()
+        .context(format!(
+            "Failed to start server binary at {:?}",
+            server_binary
+        ))?;
 
-    match daemonize.start() {
-        Ok(_) => {
-            // We're now in daemon mode - run the server
-            // Set up logging to file (use blocking writer for simplicity)
-            let log_dir = log_file.parent().unwrap().to_path_buf();
-            let log_filename = log_file.file_name().unwrap().to_string_lossy().to_string();
+    let server_pid = child.id();
 
-            // Create a file appender that writes directly to the log file
-            let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
+    // Write PID to file
+    fs::write(&pid_file, server_pid.to_string())?;
 
-            // Initialize tracing for file logging
-            tracing_subscriber::registry()
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_target(false)
-                        .with_line_number(false)
-                        .with_thread_ids(false)
-                        .with_thread_names(false)
-                        .with_file(false)
-                        .with_ansi(false)
-                        .with_timer(tracing_subscriber::fmt::time::ChronoLocal::rfc_3339())
-                        .compact()
-                        .with_writer(file_appender),
-                )
-                .with(tracing_subscriber::EnvFilter::new("info"))
-                .try_init()
-                .ok();
+    // Give the server a moment to start
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Write PID to file
-            fs::write(&pid_file, std::process::id().to_string()).ok();
-
-            // Run the server (this will block)
-            bifrost_server::run_server(config)?;
-
-            Ok(())
-        }
-        Err(e) => {
-            print_error(&format!("Failed to daemonize: {}", e));
-            Err(anyhow::anyhow!("Daemonize error: {}", e))
-        }
+    // Check if the process is still running
+    if !is_process_running(server_pid) {
+        print_error("Server failed to start");
+        return Err(anyhow::anyhow!("Server process terminated immediately"));
     }
+
+    print_success("Server started successfully");
+    println!();
+    println!(
+        "  {} Server PID: {}",
+        "→".cyan(),
+        server_pid.to_string().bold()
+    );
+    println!(
+        "  {} To stop the server, run: {}",
+        "→".cyan(),
+        "bifrost stop".bold()
+    );
+    println!();
+
+    Ok(())
 }
 
 /// Stop command implementation
@@ -240,7 +263,7 @@ pub fn cmd_stop() -> Result<()> {
         print_warning("Server is not running");
         println!();
         println!(
-            "  {} To start the server, run: {}",
+            "{} To start the server, run: {}",
             "→".cyan(),
             "bifrost start".bold()
         );
@@ -254,16 +277,9 @@ pub fn cmd_stop() -> Result<()> {
     println!();
 
     if let Some((name, memory, cpu)) = get_process_info(pid) {
-        if let Ok(config) = bifrost_server::config::Config::from_file(&get_config_path()?) {
-            let proxy = config.server.proxy.as_deref().unwrap_or("None");
-            print_process_table(
-                pid,
-                &name,
-                memory,
-                cpu,
-                Some(config.server.port),
-                Some(proxy),
-            );
+        if let Ok(config) = ServerConfig::from_file(&get_config_path()?) {
+            let proxy = config.proxy.as_deref().unwrap_or("None");
+            print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
         } else {
             print_process_table(pid, &name, memory, cpu, None, None);
         }
@@ -301,7 +317,7 @@ pub fn cmd_stop() -> Result<()> {
 
     println!();
     println!(
-        "  {} To start the server, run: {}",
+        "{} To start the server, run: {}",
         "→".cyan(),
         "bifrost start".bold()
     );
@@ -342,9 +358,9 @@ pub fn cmd_restart() -> Result<()> {
                 fs::remove_file(&pid_file).ok();
             }
         }
-        print_success("Server stopped");
+        println!("\n{}", "→ Server stopped".bold().green());
     } else {
-        print_warning("Server was not running");
+        println!("\n{}", "⚠ Server was not running".bold().yellow());
     }
 
     // Start server without header (reuse start logic but skip the banner)
@@ -355,27 +371,19 @@ pub fn cmd_restart() -> Result<()> {
 
 /// Status command implementation
 pub fn cmd_status() -> Result<()> {
-    println!("\n{}", "Bifrost - Server Status".bold().white().on_purple());
-    println!();
-
     let config_path = get_config_path()?;
 
     if is_server_running() {
-        print_success("Server is running");
+        println!(
+            "\n{}",
+            "Bifrost - Server Status: Running".bold().white().on_green()
+        );
         println!();
-
         if let Some(pid) = get_stored_pid() {
             if let Some((name, memory, cpu)) = get_process_info(pid) {
-                if let Ok(config) = bifrost_server::config::Config::from_file(&config_path) {
-                    let proxy = config.server.proxy.as_deref().unwrap_or("None");
-                    print_process_table(
-                        pid,
-                        &name,
-                        memory,
-                        cpu,
-                        Some(config.server.port),
-                        Some(proxy),
-                    );
+                if let Ok(config) = ServerConfig::from_file(&config_path) {
+                    let proxy = config.proxy.as_deref().unwrap_or("None");
+                    print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
                 } else {
                     print_process_table(pid, &name, memory, cpu, None, None);
                 }
@@ -384,16 +392,20 @@ pub fn cmd_status() -> Result<()> {
             }
         }
     } else {
-        print_warning("Server is not running");
-        println!();
         println!(
-            "  {} To start the server, run: {}",
+            "\n{}",
+            "Bifrost - Server Status: Stopped"
+                .bold()
+                .white()
+                .on_yellow()
+        );
+        println!(
+            "{} To start the server, run: {}",
             "→".cyan(),
             "bifrost start".bold()
         );
+        println!();
     }
-
-    println!();
 
     Ok(())
 }

@@ -2,86 +2,64 @@
 name = "bifrost"
 version = "0.1.0"
 edition = "2024"
+description = "Bifrost CLI - Management tool for Bifrost server"
 
 [workspace]
 members = ["bifrost-server"]
 
-
 [workspace.dependencies]
+# CLI dependencies
+clap = { version = "4.5.60", features = ["derive", "color", "help", "usage"] }
+colored = "3.0"
+tabled = "0.20"
+sysinfo = "0.33"
+which = "5.0"
+
+# Server dependencies
 axum = { version = "0.8.8", features = ["macros"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread"] }
-# Async traits
-async-trait = "0.1"
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
-# Error handling
-thiserror = "2.0"
-anyhow = "1.0"
-# Time handling with serde support
-chrono = { version = "0.4", features = ["serde"] }
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = [
-    "env-filter",
-    "time",
-    "chrono",
-] }
-tracing-appender = "0.2"
-# Middleware
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-# Utilities
-futures = "0.3"
 http = "1.0"
-# SSE streaming
-eventsource-stream = "0.2.3"
-# TOML support
-toml = "0.8"
-# URL encoding
 urlencoding = "2.1"
-# Daemon process management
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "0.8"
+tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread"] }
+futures = "0.3"
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+eventsource-stream = "0.2.3"
+thiserror = "2.0"
+
+# Shared dependencies
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter"] }
+tracing-appender = "0.2"
 daemonize = "0.5"
-# System information (PID, memory, CPU)
-sysinfo = "0.33"
-# Colored output for CLI
-colored = "3.0"
-# Terminal table formatting
-tabled = "0.20"
-# Get current username
-whoami = "1.5"
-# Get home directory
 dirs = "6.0"
-# Testing
+whoami = "1.5"
+
+# Dev dependencies
 wiremock = "0.6"
 tempfile = "3"
 
-dir = "0.1.2"
-bifrost-server = { path = "bifrost-server" }
-
 [dependencies]
-clap = { version = "4.5.60", features = ["derive", "color", "help", "usage"] }
-anyhow.workspace = true
-bifrost-server.workspace = true
-dir.workspace = true
-daemonize.workspace = true
-sysinfo.workspace = true
+clap.workspace = true
 colored.workspace = true
 tabled.workspace = true
-tracing-appender.workspace = true
+anyhow.workspace = true
+sysinfo.workspace = true
 whoami.workspace = true
 dirs.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+which.workspace = true
 toml.workspace = true
 chrono.workspace = true
-serde.workspace = true
 
-# Release profile optimized for smaller binary size
 [profile.release]
-opt-level = 3     # Optimize for size instead of speed
-lto = "thin"        # Lighter link-time optimization
-codegen-units = 16  # Allow some parallel compilation
-panic = "abort"     # Smaller panic handling
-strip = true        # Strip debug symbols
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -3,6 +3,10 @@ name = "bifrost-server"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "bifrost-server"
+path = "src/main.rs"
+
 [dependencies]
 axum.workspace = true
 tower.workspace = true
@@ -21,8 +25,11 @@ thiserror.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+daemonize.workspace = true
 dirs.workspace = true
-
+whoami.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
