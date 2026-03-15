@@ -1,6 +1,6 @@
 use axum::response::sse::KeepAliveStream;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::stream::Stream;
+use tokio_stream::Stream;
 use std::pin::Pin;
 
 pub fn extend_overwrite(base: &mut http::header::HeaderMap, other: http::header::HeaderMap) {
@@ -62,15 +62,4 @@ pub fn create_sse_stream(
 
     // Create Sse with KeepAlive for immediate flushing
     Sse::new(boxed).keep_alive(KeepAlive::new().interval(Duration::from_millis(50)))
-}
-
-/// Check if an event data indicates the stream is done
-///
-/// # Arguments
-/// * `data` - The event data to check
-///
-/// # Returns
-/// true if the data is "[DONE]", false otherwise
-pub fn is_done_event(data: &str) -> bool {
-    data.starts_with("[DONE]")
 }

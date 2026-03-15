@@ -8,11 +8,11 @@ use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use eventsource_stream::Eventsource;
-use futures::stream::StreamExt;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 /// Context for processing provider responses
 pub struct RequestContext {
     pub url: String,
@@ -52,13 +52,7 @@ pub async fn execute_provider_request(
 
     // Update model field to use model_name only (without provider prefix)
     // Safety: We just verified model exists at line 107-111
-    if let Some(model_field) = body.get_mut("model") {
-        *model_field = Value::String(model_name.to_string());
-    } else {
-        return Err(LlmMapError::Internal(anyhow::anyhow!(
-            "Model field disappeared after validation"
-        )));
-    }
+    *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
 
     let mut final_headers = HeaderMap::new();
 
@@ -72,6 +66,10 @@ pub async fn execute_provider_request(
 
     let final_url = transform_url.unwrap_or(url);
 
+    if let Some(hs) = transform_headers {
+        crate::util::extend_overwrite(&mut final_headers, hs);
+    }
+
     // Merge provider-configured body fields into the request body
     if let Some(provider_body_fields) = provider.body.as_ref() {
         for body_entry in provider_body_fields {
@@ -79,18 +77,14 @@ pub async fn execute_provider_request(
         }
     }
 
-    if let Some(phs) = provider.headers.as_ref() {
-        phs.iter().for_each(|header_entry| {
+    if let Some(provider_headers) = provider.headers.as_ref() {
+        for header_entry in provider_headers {
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
             {
                 final_headers.insert(header_name, header_value);
             }
-        });
-    }
-
-    if let Some(hs) = transform_headers {
-        crate::util::extend_overwrite(&mut final_headers, hs);
+        }
     }
 
     // Merge model-specific body fields if model is configured in provider.models
@@ -209,13 +203,7 @@ pub async fn process_stream_request(
     });
 
     // Convert receiver to stream for axum SSE
-    let sse_stream = futures::stream::unfold(rx, move |mut rx| async move {
-        match rx.recv().await {
-            Some(Ok(event)) => Some((Ok(event), rx)),
-            Some(Err(e)) => Some((Err(e), rx)),
-            None => None, // Channel closed, end stream
-        }
-    });
+    let sse_stream = ReceiverStream::new(rx);
 
     let mut headers = HeaderMap::new();
     headers.insert(

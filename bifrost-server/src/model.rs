@@ -66,6 +66,10 @@ impl StreamChunkTransform {
         }
     }
 
+    pub fn new_empty() -> Self {
+        Self { events: vec![] }
+    }
+
     /// Create a transform with a single event and event name
     pub fn new_with_event(data: serde_json::Value, event: impl Into<String>) -> Self {
         Self {
