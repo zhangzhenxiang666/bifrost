@@ -15,7 +15,7 @@ pub struct OpenAIStreamState {
     tool_call_blocks: Vec<usize>,
     /// Current active block index (usize::MAX = no active block)
     current_active_block_index: usize,
-    /// 标记消息起始, 思考起始, 文本起始
+    /// Flags to mark the start of message, thinking, and text blocks
     flags: u8,
 }
 
@@ -108,10 +108,10 @@ impl OpenAIStreamState {
     /// - `needs_start = false` → continuation; just emit the delta.
     pub fn get_or_create_tool_call_block(&mut self, tool_call_index: usize) -> (usize, bool) {
         // Fast path: already allocated.
-        if let Some(&block) = self.tool_call_blocks.get(tool_call_index) {
-            if block != usize::MAX {
-                return (block, false);
-            }
+        if let Some(&block) = self.tool_call_blocks.get(tool_call_index)
+            && block != usize::MAX
+        {
+            return (block, false);
         }
 
         // Slow path: first time we see this index.

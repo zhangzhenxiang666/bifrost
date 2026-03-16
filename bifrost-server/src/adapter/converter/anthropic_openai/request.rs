@@ -18,16 +18,19 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
         ));
     };
 
+    // Build final request
+    let mut result = serde_json::Map::new();
+
     // Extract and transform tools (if present)
-    if let Some(tools) = obj.remove("tools").and_then(|v| v.as_array().cloned()) {
+    if let Some(Value::Array(tools)) = obj.remove("tools") {
         let transformed_tools = transform_tools_anthropic_to_openai(tools)?;
-        obj.insert("tools".to_string(), transformed_tools);
+        result.insert("tools".to_string(), transformed_tools);
     }
 
     // Extract and transform tool_choice (if present)
-    if let Some(tool_choice) = obj.get("tool_choice") {
+    if let Some(tool_choice) = obj.remove("tool_choice") {
         let transformed = transform_tool_choice_anthropic_to_openai(tool_choice)?;
-        obj.insert("tool_choice".to_string(), transformed);
+        result.insert("tool_choice".to_string(), transformed);
     }
 
     // Extract system message first (if exists)
@@ -39,11 +42,33 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
         })
     });
 
+    // remove thinking field
+    obj.remove("thinking");
+
+    // Extract and transform ouput_config (if present)
+    if let Some(Value::Object(mut output_config)) = obj.remove("output_config")
+        && let Some(effort) = output_config.remove("effort")
+        && let Some(effort_str) = effort.as_str()
+    {
+        let effort_level = match effort_str {
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            "max" => "xhigh",
+            _ => "none",
+        };
+        result.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort_level.to_string()),
+        );
+    }
+
     // Take ownership of messages array
-    let messages = obj
-        .remove("messages")
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
+    let messages = if let Some(Value::Array(msgs)) = obj.remove("messages") {
+        msgs
+    } else {
+        Vec::new()
+    };
 
     let mut openai_messages = Vec::new();
 
@@ -58,15 +83,11 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
         openai_messages.extend(transformed);
     }
 
-    // Build final request
-    let mut result = serde_json::Map::new();
     result.insert("messages".to_string(), Value::Array(openai_messages));
 
-    // Copy other fields
+    // Move other fields
     for (key, value) in obj {
-        if key != "messages" && key != "system" {
-            result.insert(key, value);
-        }
+        result.insert(key, value);
     }
 
     Ok(Value::Object(result))

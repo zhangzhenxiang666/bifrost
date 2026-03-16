@@ -2,6 +2,7 @@
 //!
 //! This module provides functions to convert OpenAI API response format to Anthropic format.
 
+use super::create_null_string;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -34,35 +35,32 @@ pub fn transform_usage_openai_to_anthropic(usage: Option<&Value>) -> Value {
 
 /// Transform OpenAI response to Anthropic response format
 pub fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
-    let Value::Object(obj) = body else {
+    let Value::Object(mut obj) = body else {
         return Err(LlmMapError::Validation(
             "Response body must be an object".into(),
         ));
     };
 
     // Extract basic fields
-    let id = obj.get("id").cloned().unwrap_or(Value::String("".into()));
-    let model = obj
-        .get("model")
-        .cloned()
-        .unwrap_or(Value::String("".into()));
-    let created = obj.get("created").cloned();
+    let id = obj.remove("id").unwrap_or_else(create_null_string);
+    let model = obj.remove("model").unwrap_or_else(create_null_string);
+    let created = obj.remove("created");
 
     // Extract choices array
-    let choices = obj
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| LlmMapError::Validation("choices array is required".into()))?;
+    let Some(Value::Array(choices)) = obj.remove("choices") else {
+        return Err(LlmMapError::Validation("choices array is required".into()));
+    };
 
     // We only process the first choice (index 0)
-    let first_choice = choices.first().and_then(|v| v.as_object()).ok_or_else(|| {
-        LlmMapError::Validation("choices array must have at least one element".into())
-    })?;
+    let Some(Value::Object(mut first_choice)) = choices.into_iter().next() else {
+        return Err(LlmMapError::Validation(
+            "choices array must have at least one element".into(),
+        ));
+    };
 
-    let message = first_choice
-        .get("message")
-        .and_then(|v| v.as_object())
-        .ok_or_else(|| LlmMapError::Validation("message object is required".into()))?;
+    let Some(Value::Object(mut message)) = first_choice.remove("message") else {
+        return Err(LlmMapError::Validation("message object is required".into()));
+    };
 
     let finish_reason = first_choice.get("finish_reason").and_then(|v| v.as_str());
 
@@ -102,30 +100,27 @@ pub fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
     }
 
     // 3. Handle tool_calls
-    if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+    if let Some(Value::Array(tool_calls)) = message.remove("tool_calls") {
         for tool_call in tool_calls {
-            if let Some(tc_obj) = tool_call.as_object() {
-                let id = tc_obj
-                    .get("id")
-                    .cloned()
-                    .unwrap_or(Value::String("".into()));
-                let name = tc_obj
-                    .get("function")
-                    .and_then(|v| v.as_object())
-                    .and_then(|v| v.get("name"))
-                    .cloned()
-                    .unwrap_or(Value::String("".into()));
+            if let Value::Object(mut tc_obj) = tool_call {
+                let id = tc_obj.remove("id").unwrap_or_else(create_null_string);
+
+                let Some(Value::Object(mut function)) = tc_obj.remove("function") else {
+                    continue;
+                };
+
+                let name = function.remove("name").unwrap_or_else(create_null_string);
 
                 // Parse arguments from JSON string to object
-                let arguments_str = tc_obj
-                    .get("function")
-                    .and_then(|v| v.as_object())
-                    .and_then(|v| v.get("arguments"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("{}");
-
-                let input: Value = serde_json::from_str(arguments_str)
-                    .unwrap_or(Value::Object(serde_json::Map::new()));
+                let input = function
+                    .remove("arguments")
+                    .and_then(|v| {
+                        v.as_str().map(|s| {
+                            serde_json::from_str(s)
+                                .unwrap_or_else(|_| Value::Object(Default::default()))
+                        })
+                    })
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
                 content.push(json!({
                     "type": "tool_use",
@@ -142,7 +137,6 @@ pub fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
         Some("tool_calls") => "tool_use",
         Some("stop") => "end_turn",
         Some("length") => "max_tokens",
-        Some("content_filter") => "end_turn",
         _ => "end_turn",
     };
 

@@ -2,6 +2,7 @@
 //!
 //! This module provides low-level message transformation functions.
 
+use super::create_null;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -119,11 +120,8 @@ pub fn extract_tool_results_from_user_message(
         match block_type {
             Some("tool_result") => {
                 // Convert tool_result to a separate tool message
-                let tool_call_id = obj.get("tool_use_id").cloned().unwrap_or(Value::Null);
-                let content = obj
-                    .get("content")
-                    .cloned()
-                    .unwrap_or(Value::String("".into()));
+                let tool_call_id = obj.remove("tool_use_id").unwrap_or_else(create_null);
+                let content = obj.remove("content").unwrap_or(Value::String("".into()));
 
                 tool_messages.push(json!({
                     "role": "tool",
@@ -191,7 +189,7 @@ pub fn transform_assistant_content_with_tool_use(
     let mut tool_calls = Vec::new();
 
     for block in blocks {
-        let Value::Object(obj) = block else {
+        let Value::Object(mut obj) = block else {
             continue;
         };
 
@@ -201,11 +199,10 @@ pub fn transform_assistant_content_with_tool_use(
                 text_parts.push(Value::Object(obj));
             }
             Some("tool_use") => {
-                let id = obj.get("id").cloned().unwrap_or(Value::Null);
-                let name = obj.get("name").cloned().unwrap_or(Value::Null);
+                let id = obj.remove("id").unwrap_or_else(create_null);
+                let name = obj.remove("name").unwrap_or_else(create_null);
                 let input = obj
-                    .get("input")
-                    .cloned()
+                    .remove("input")
                     .unwrap_or(Value::Object(serde_json::Map::new()));
 
                 let arguments = serde_json::to_string(&input).unwrap_or_default();
@@ -308,12 +305,12 @@ pub fn transform_tools_anthropic_to_openai(tools: Vec<Value>) -> Result<Value, L
     let mut transformed = Vec::with_capacity(tools.len());
 
     for tool in tools {
-        let Value::Object(obj) = tool else {
+        let Value::Object(mut obj) = tool else {
             continue;
         };
 
-        let name = obj.get("name").cloned().unwrap_or(Value::Null);
-        let description = obj.get("description").cloned().unwrap_or(Value::Null);
+        let name = obj.remove("name").unwrap_or_else(create_null);
+        let description = obj.remove("description").unwrap_or_else(create_null);
         let parameters = obj
             .into_iter()
             .find_map(|(k, v)| (k == "input_schema").then_some(v))
@@ -333,12 +330,10 @@ pub fn transform_tools_anthropic_to_openai(tools: Vec<Value>) -> Result<Value, L
 }
 
 /// Transform tool_choice from Anthropic format to OpenAI format
-pub fn transform_tool_choice_anthropic_to_openai(
-    tool_choice: &Value,
-) -> Result<Value, LlmMapError> {
-    let Some(obj) = tool_choice.as_object() else {
+pub fn transform_tool_choice_anthropic_to_openai(tool_choice: Value) -> Result<Value, LlmMapError> {
+    let Value::Object(mut obj) = tool_choice else {
         // If it's already a string (e.g., "auto", "none", "required"), return as-is
-        return Ok(tool_choice.clone());
+        return Ok(tool_choice);
     };
 
     let tool_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("auto");
@@ -348,7 +343,7 @@ pub fn transform_tool_choice_anthropic_to_openai(
         "none" => Ok(Value::String("none".into())),
         "any" => Ok(Value::String("required".into())), // Anthropic "any" -> OpenAI "required"
         "tool" => {
-            let name = obj.get("name").cloned().unwrap_or(Value::Null);
+            let name = obj.remove("name").unwrap_or_else(create_null);
             Ok(json!({
                 "type": "function",
                 "function": {
