@@ -7,10 +7,17 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
 }
 
-impl From<ProviderRegistry> for AppState {
-    fn from(registry: ProviderRegistry) -> Self {
+impl AppState {
+    /// Create AppState (debug_recorder is None when debug feature is disabled)
+    pub fn new(registry: ProviderRegistry) -> Self {
         Self {
             registry: Arc::new(registry),
         }
+    }
+}
+
+impl From<ProviderRegistry> for AppState {
+    fn from(registry: ProviderRegistry) -> Self {
+        Self::new(registry)
     }
 }

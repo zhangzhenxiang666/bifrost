@@ -11,15 +11,3 @@
 pub mod message;
 pub mod request;
 pub mod response;
-
-pub use message::*;
-pub use request::*;
-pub use response::*;
-
-pub fn create_null() -> serde_json::Value {
-    serde_json::Value::Null
-}
-
-pub fn create_null_string() -> serde_json::Value {
-    serde_json::Value::String("".into())
-}

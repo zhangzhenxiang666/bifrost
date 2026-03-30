@@ -1,7 +1,7 @@
 use axum::response::sse::KeepAliveStream;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use tokio_stream::Stream;
 use std::pin::Pin;
+use tokio_stream::Stream;
 
 pub fn extend_overwrite(base: &mut http::header::HeaderMap, other: http::header::HeaderMap) {
     let mut last_key: Option<http::header::HeaderName> = None;
@@ -29,6 +29,18 @@ pub fn join_url_paths(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     format!("{}/{}", base, path)
+}
+
+/// Extracts the path after `/openai/` or `/anthropic/`                                                                                         
+///                                                                                                                                             
+/// Examples:                                                                                                                                   
+/// - `/openai/chat/completions` -> `chat/completions`                                                                                          
+/// - `/anthropic/messages` -> `messages`
+pub fn extract_endpoint(url: &str) -> Option<&str> {
+    url.strip_prefix("/openai/")
+        .or_else(|| url.strip_prefix("/anthropic/"))
+        .map(|s| s.trim_start_matches('/'))
+        .filter(|s| !s.is_empty())
 }
 
 /// Parse `provider@model` format into provider ID and model name
@@ -62,4 +74,35 @@ pub fn create_sse_stream(
 
     // Create Sse with KeepAlive for immediate flushing
     Sse::new(boxed).keep_alive(KeepAlive::new().interval(Duration::from_millis(50)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_endpoint;
+
+    #[test]
+    fn test_extract_endpoint_openai() {
+        assert_eq!(
+            extract_endpoint("/openai/chat/completions"),
+            Some("chat/completions")
+        );
+        assert_eq!(extract_endpoint("/openai/tt"), Some("tt"));
+        assert_eq!(extract_endpoint("/openai/tt/tt"), Some("tt/tt"));
+    }
+
+    #[test]
+    fn test_extract_endpoint_anthropic() {
+        assert_eq!(extract_endpoint("/anthropic/messages"), Some("messages"));
+        assert_eq!(
+            extract_endpoint("/anthropic/messages/123"),
+            Some("messages/123")
+        );
+    }
+
+    #[test]
+    fn test_extract_endpoint_invalid() {
+        assert_eq!(extract_endpoint("/google/chat/completions"), None);
+        assert_eq!(extract_endpoint("/openai"), None);
+        assert_eq!(extract_endpoint("/anthropic"), None);
+    }
 }

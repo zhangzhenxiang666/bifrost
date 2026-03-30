@@ -13,6 +13,10 @@ pub mod anthropic_openai;
 pub mod qwen;
 pub mod stream;
 
-pub use anthropic_openai::*;
-pub use qwen::*;
-pub use stream::*;
+pub fn create_null() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+pub fn create_null_string() -> serde_json::Value {
+    serde_json::Value::String("".into())
+}

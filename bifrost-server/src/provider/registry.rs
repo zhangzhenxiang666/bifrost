@@ -275,7 +275,12 @@ mod tests {
         // Test that executor can execute request
         let body = json!({"test": "data"});
         let headers = http::HeaderMap::new();
-        let result = executor.execute_request(body, &headers).await.unwrap();
+        let uri = http::Uri::from_static("/openai/chat/completions");
+
+        let result = executor
+            .execute_request(&uri, body, &headers)
+            .await
+            .unwrap();
 
         // Verify URL is set from provider config
         // Verify URL is set from provider config with endpoint path
@@ -299,7 +304,11 @@ mod tests {
             "messages": [{"role": "user", "content": "Hello"}]
         });
         let headers = http::HeaderMap::new();
-        let result = executor.execute_request(body, &headers).await.unwrap();
+        let uri = http::Uri::from_static("https://openai.com/v1");
+        let result = executor
+            .execute_request(&uri, body, &headers)
+            .await
+            .unwrap();
 
         // Verify adapter added Qwen headers
         assert!(result.headers.is_some());

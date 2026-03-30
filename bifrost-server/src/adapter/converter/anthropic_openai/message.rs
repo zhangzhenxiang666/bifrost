@@ -2,8 +2,7 @@
 //!
 //! This module provides low-level message transformation functions.
 
-use super::create_null;
-use crate::error::LlmMapError;
+use crate::adapter::converter::create_null;
 use serde_json::{Value, json};
 
 /// Extract system text from Anthropic system field (string or content blocks)
@@ -26,9 +25,9 @@ pub fn extract_system_text(system: Value) -> String {
 
 /// Transform a single Anthropic message into 1+ OpenAI messages
 /// Returns Vec because tool_result blocks become separate tool messages
-pub fn transform_message_anthropic_to_openai(msg: Value) -> Result<Vec<Value>, LlmMapError> {
+pub fn transform_message_anthropic_to_openai(msg: Value) -> Vec<Value> {
     let Value::Object(mut obj) = msg else {
-        return Ok(Vec::new());
+        return vec![];
     };
 
     let role = obj
@@ -48,11 +47,7 @@ pub fn transform_message_anthropic_to_openai(msg: Value) -> Result<Vec<Value>, L
             _ => vec![],
         };
 
-        let (remaining_content, tool_messages) =
-            extract_tool_results_from_user_message(content_array)?;
-
-        // Add tool messages first (OpenAI requires tool messages right after assistant tool_call)
-        let mut result = tool_messages;
+        let (remaining_content, mut result) = extract_tool_results_from_user_message(content_array);
 
         // Add user message with remaining text/image content
         if !remaining_content.is_null() {
@@ -61,7 +56,7 @@ pub fn transform_message_anthropic_to_openai(msg: Value) -> Result<Vec<Value>, L
             obj.insert("content".into(), Value::String("".into()));
         }
         result.push(Value::Object(obj));
-        return Ok(result);
+        return result;
     }
 
     // Transform assistant message: convert tool_use blocks to tool_calls
@@ -76,13 +71,13 @@ pub fn transform_message_anthropic_to_openai(msg: Value) -> Result<Vec<Value>, L
         };
 
         let (transformed_content, tool_calls) =
-            transform_assistant_content_with_tool_use(content_array)?;
+            transform_assistant_content_with_tool_use(content_array);
         obj.insert("content".into(), transformed_content);
 
         if !tool_calls.is_empty() {
             obj.insert("tool_calls".into(), Value::Array(tool_calls));
         }
-        return Ok(vec![Value::Object(obj)]);
+        return vec![Value::Object(obj)];
     }
 
     // For other cases, transform content blocks normally
@@ -94,18 +89,16 @@ pub fn transform_message_anthropic_to_openai(msg: Value) -> Result<Vec<Value>, L
             _ => vec![],
         };
 
-        let transformed = transform_regular_content_blocks(content_array)?;
+        let transformed = transform_regular_content_blocks(content_array);
         obj.insert("content".into(), transformed);
     }
 
-    Ok(vec![Value::Object(obj)])
+    vec![Value::Object(obj)]
 }
 
 /// Extract tool_result blocks from user message and convert them to separate tool messages
 /// Returns (remaining_content, tool_messages)
-pub fn extract_tool_results_from_user_message(
-    blocks: Vec<Value>,
-) -> Result<(Value, Vec<Value>), LlmMapError> {
+pub fn extract_tool_results_from_user_message(blocks: Vec<Value>) -> (Value, Vec<Value>) {
     let mut text_parts: Vec<Value> = Vec::new();
     let mut tool_messages: Vec<Value> = Vec::new();
 
@@ -177,14 +170,12 @@ pub fn extract_tool_results_from_user_message(
         Value::Array(text_parts)
     };
 
-    Ok((remaining_content, tool_messages))
+    (remaining_content, tool_messages)
 }
 
 /// Transform assistant content with tool_use blocks
 /// Returns (text_content, tool_calls)
-pub fn transform_assistant_content_with_tool_use(
-    blocks: Vec<Value>,
-) -> Result<(Value, Vec<Value>), LlmMapError> {
+pub fn transform_assistant_content_with_tool_use(blocks: Vec<Value>) -> (Value, Vec<Value>) {
     let mut text_parts: Vec<Value> = Vec::new();
     let mut tool_calls = Vec::new();
 
@@ -235,11 +226,11 @@ pub fn transform_assistant_content_with_tool_use(
         Value::Array(text_parts)
     };
 
-    Ok((content, tool_calls))
+    (content, tool_calls)
 }
 
 /// Transform regular content blocks (text, image)
-pub fn transform_regular_content_blocks(blocks: Vec<Value>) -> Result<Value, LlmMapError> {
+pub fn transform_regular_content_blocks(blocks: Vec<Value>) -> Value {
     let mut text_parts: Vec<Value> = Vec::new();
 
     for block in blocks {
@@ -283,7 +274,7 @@ pub fn transform_regular_content_blocks(blocks: Vec<Value>) -> Result<Value, Llm
         }
     }
 
-    let content = if text_parts.is_empty() {
+    if text_parts.is_empty() {
         Value::String("".into())
     } else if text_parts.len() == 1 {
         // For single text block, extract the text as string
@@ -295,13 +286,11 @@ pub fn transform_regular_content_blocks(blocks: Vec<Value>) -> Result<Value, Llm
         }
     } else {
         Value::Array(text_parts)
-    };
-
-    Ok(content)
+    }
 }
 
 /// Transform tools from Anthropic format to OpenAI format
-pub fn transform_tools_anthropic_to_openai(tools: Vec<Value>) -> Result<Value, LlmMapError> {
+pub fn transform_tools_anthropic_to_openai(tools: Vec<Value>) -> Value {
     let mut transformed = Vec::with_capacity(tools.len());
 
     for tool in tools {
@@ -326,31 +315,31 @@ pub fn transform_tools_anthropic_to_openai(tools: Vec<Value>) -> Result<Value, L
         }));
     }
 
-    Ok(Value::Array(transformed))
+    Value::Array(transformed)
 }
 
 /// Transform tool_choice from Anthropic format to OpenAI format
-pub fn transform_tool_choice_anthropic_to_openai(tool_choice: Value) -> Result<Value, LlmMapError> {
+pub fn transform_tool_choice_anthropic_to_openai(tool_choice: Value) -> Value {
     let Value::Object(mut obj) = tool_choice else {
         // If it's already a string (e.g., "auto", "none", "required"), return as-is
-        return Ok(tool_choice);
+        return tool_choice;
     };
 
     let tool_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("auto");
 
     match tool_type {
-        "auto" => Ok(Value::String("auto".into())),
-        "none" => Ok(Value::String("none".into())),
-        "any" => Ok(Value::String("required".into())), // Anthropic "any" -> OpenAI "required"
+        "auto" => Value::String("auto".into()),
+        "none" => Value::String("none".into()),
+        "any" => Value::String("required".into()), // Anthropic "any" -> OpenAI "required"
         "tool" => {
             let name = obj.remove("name").unwrap_or_else(create_null);
-            Ok(json!({
+            json!({
                 "type": "function",
                 "function": {
                     "name": name
                 }
-            }))
+            })
         }
-        _ => Ok(Value::String("auto".into())),
+        _ => Value::String("auto".into()),
     }
 }

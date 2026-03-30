@@ -20,7 +20,6 @@ use crate::state::AppState;
 
 use axum::Router;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
@@ -36,40 +35,32 @@ pub fn run_server(config: config::Config) -> anyhow::Result<()> {
 }
 
 async fn server(config: config::Config) -> anyhow::Result<()> {
-    // Logging should be initialized by the caller (CLI)
-    // If not initialized, tracing macros will be no-ops
-
     info!("Bifrost service starting...");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
     let port = config.server.port;
     info!("Starting server on port {}", port);
 
-    // Create provider registry
     let registry = ProviderRegistry::from_config(&config);
-    let state = AppState {
-        registry: Arc::new(registry),
-    };
+    let state = AppState::new(registry);
 
-    // Configure CORS - allow all origins for API access
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any)
         .expose_headers(Any);
 
-    // Build router with middleware
-    let app = Router::new()
+    let llm_router = Router::new()
         .route(
             "/openai/chat/completions",
             axum::routing::post(chat_completions),
         )
         .route("/anthropic/v1/messages", axum::routing::post(messages))
-        .with_state(state)
-        // Add request logging middleware
-        .layer(axum::middleware::from_fn(request_logger))
-        // Add CORS middleware (must be last)
-        .layer(cors);
+        .layer(axum::middleware::from_fn(request_logger));
+
+    let main_router = Router::new().merge(llm_router);
+
+    let app = main_router.with_state(state).layer(cors);
 
     // Bind and listen
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

@@ -13,7 +13,7 @@ use http::HeaderMap;
 use crate::adapter::Adapter;
 use crate::config::ProviderConfig;
 use crate::error::{LlmMapError, Result};
-use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
 
 /// Executor that manages the adapter chain in an onion architecture.
 ///
@@ -39,14 +39,15 @@ impl OnionExecutor {
     /// ```rust,no_run
     /// use bifrost_server::adapter::{Adapter, OnionExecutor};
     /// use bifrost_server::config::{Endpoint, ProviderConfig};
-    /// use bifrost_server::error::LlmMapError;
+    /// use bifrost_server::error::{LlmMapError, Result};
+    /// use bifrost_server::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
     /// # struct MyAdapter;
     /// # #[async_trait::async_trait]
     /// # impl Adapter for MyAdapter {
     /// #     type Error = LlmMapError;
-    /// #     async fn transform_request(&self, body: serde_json::Value, provider_config: &ProviderConfig, headers: &http::HeaderMap) -> Result<bifrost_server::model::RequestTransform, Self::Error> { Ok(bifrost_server::model::RequestTransform::new(body)) }
-    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, headers: &http::HeaderMap) -> Result<bifrost_server::model::ResponseTransform, Self::Error> { Ok(bifrost_server::model::ResponseTransform::new(body)) }
-    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value, _event: &str, _provider_config: &ProviderConfig) -> Result<bifrost_server::model::StreamChunkTransform, Self::Error> { Ok(bifrost_server::model::StreamChunkTransform::new(chunk)) }
+    /// #     async fn transform_request(&self, ctx: RequestContext<'_>) -> Result<RequestTransform> { Ok(RequestTransform::new(ctx.body)) }
+    /// #     async fn transform_response(&self, body: serde_json::Value, status: http::StatusCode, _headers: &http::HeaderMap) -> Result<ResponseTransform> { Ok(ResponseTransform::new(body)) }
+    /// #     async fn transform_stream_chunk(&self, chunk: serde_json::Value, _event: &str, _provider_config: &ProviderConfig) -> Result<StreamChunkTransform> { Ok(StreamChunkTransform::new(chunk)) }
     /// # }
     /// # let provider_config = ProviderConfig {
     /// #     base_url: "https://api.example.com".to_string(),
@@ -94,6 +95,7 @@ impl OnionExecutor {
     /// ```
     pub async fn execute_request(
         &self,
+        uri: &http::Uri,
         body: serde_json::Value,
         headers: &http::HeaderMap,
     ) -> Result<RequestTransform> {
@@ -103,8 +105,9 @@ impl OnionExecutor {
 
         // Forward execution: A → B → C
         for adapter in &self.adapters {
+            let ctx = RequestContext::new(uri, current_body, &self.provider_config, headers);
             let transform = adapter
-                .transform_request(current_body, &self.provider_config, headers)
+                .transform_request(ctx)
                 .await
                 .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
 
@@ -276,17 +279,12 @@ mod tests {
     impl Adapter for MockAdapter {
         type Error = LlmMapError;
 
-        async fn transform_request(
-            &self,
-            body: serde_json::Value,
-            _provider_config: &ProviderConfig,
-            _headers: &http::HeaderMap,
-        ) -> Result<RequestTransform> {
+        async fn transform_request(&self, ctx: RequestContext<'_>) -> Result<RequestTransform> {
             self.execution_log
                 .lock()
                 .await
                 .push(format!("{}_request", self.name));
-            Ok(RequestTransform::new(body))
+            Ok(RequestTransform::new(ctx.body))
         }
 
         async fn transform_response(
@@ -334,8 +332,12 @@ mod tests {
         let executor = OnionExecutor::new(adapters, provider_config);
         let body = serde_json::json!({"test": "data"});
         let headers = http::HeaderMap::new();
+        let uri = http::Uri::from_static("https://openai.com/v1");
 
-        executor.execute_request(body, &headers).await.unwrap();
+        executor
+            .execute_request(&uri, body, &headers)
+            .await
+            .unwrap();
 
         let execution_order = log.lock().await;
 
@@ -434,8 +436,10 @@ mod tests {
         // Execute request (forward: A → B → C)
         let request_body = serde_json::json!({"message": "hello"});
         let request_headers = http::HeaderMap::new();
+        let uri = http::Uri::from_static("https://openai.com/v1");
+
         executor
-            .execute_request(request_body, &request_headers)
+            .execute_request(&uri, request_body, &request_headers)
             .await
             .unwrap();
 
@@ -471,8 +475,10 @@ mod tests {
         let request_body = serde_json::json!({"test": "data"});
         let request_headers = http::HeaderMap::new();
 
+        let uri = http::Uri::from_static("https://openai.com/v1");
+
         let result = executor
-            .execute_request(request_body.clone(), &request_headers)
+            .execute_request(&uri, request_body.clone(), &request_headers)
             .await
             .unwrap();
 

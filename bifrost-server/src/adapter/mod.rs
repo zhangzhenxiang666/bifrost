@@ -15,11 +15,11 @@ pub mod chain;
 pub mod converter;
 
 use crate::config::ProviderConfig;
-use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;
-pub use converter::stream::OpenAIStreamProcessor;
+pub use converter::stream::OpenAIToAnthropicStreamProcessor;
 
 pub static X_API_KEY: http::HeaderName = http::header::HeaderName::from_static("x-api-key");
 pub static ANTHROPIC_VERSION: (http::HeaderName, http::header::HeaderValue) = (
@@ -42,9 +42,7 @@ pub trait Adapter: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `body` - The original request body as JSON
-    /// * `provider_config` - The provider configuration containing base_url, api_key, etc.
-    /// * `headers` - The HTTP headers to be sent
+    /// * `context` - The request context containing URI, body, provider config, and headers
     ///
     /// # Returns
     ///
@@ -53,9 +51,7 @@ pub trait Adapter: Send + Sync {
     /// to specify changes to URL and headers.
     async fn transform_request(
         &self,
-        body: serde_json::Value,
-        provider_config: &ProviderConfig,
-        headers: &http::HeaderMap,
+        context: RequestContext<'_>,
     ) -> Result<RequestTransform, Self::Error>;
 
     /// Transform an incoming response from the LLM provider.

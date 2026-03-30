@@ -1,22 +1,16 @@
 //! Anthropic-compatible route for messages endpoint
 
+use crate::error::Result;
 use crate::routes::handler;
 use crate::state::AppState;
-use crate::{error::Result, model::EndpointConfig};
 use axum::{Json, extract::State};
 use serde_json::Value;
-use std::sync::OnceLock;
-
-/// Endpoint configuration for Anthropic-compatible endpoints
-fn anthropic_config() -> &'static EndpointConfig {
-    static CONFIG: OnceLock<EndpointConfig> = OnceLock::new();
-    CONFIG.get_or_init(|| EndpointConfig::new("/v1/messages"))
-}
 
 /// Anthropic-compatible messages endpoint.
 #[axum::debug_handler]
 pub async fn messages(
     State(state): State<AppState>,
+    uri: http::Uri,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response> {
@@ -25,7 +19,7 @@ pub async fn messages(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, &headers, body, anthropic_config(), is_stream).await
+    handler::handle_llm_request(&state, headers, body, uri, is_stream).await
 }
 
 #[cfg(test)]
@@ -37,7 +31,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serde_json::json;
     use std::collections::HashMap;
-    use std::sync::Arc;
     use tower::util::ServiceExt;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -65,9 +58,7 @@ mod tests {
     fn create_test_state(mock_server_uri: &str) -> AppState {
         let config = create_test_config(mock_server_uri);
         let registry = ProviderRegistry::from_config(&config);
-        AppState {
-            registry: Arc::new(registry),
-        }
+        AppState::from(registry)
     }
 
     #[tokio::test]
@@ -93,12 +84,12 @@ mod tests {
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route("/v1/messages", axum::routing::post(messages))
+            .route("/anthropic/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/messages")
+            .uri("/anthropic/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
@@ -137,12 +128,12 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route("/v1/messages", axum::routing::post(messages))
+            .route("/anthropic/v1/messages", axum::routing::post(messages))
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/messages")
+            .uri("/anthropic/v1/messages")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({

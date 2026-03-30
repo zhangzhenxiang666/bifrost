@@ -55,6 +55,13 @@ pub fn is_port_in_use(port: u16) -> bool {
 /// Get process information for a given PID
 pub fn get_process_info(pid: u32) -> Option<(String, f32, f32)> {
     let mut system = System::new();
+    // First refresh to establish baseline
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+    // Wait a short period to allow CPU time to accumulate
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Second refresh to calculate CPU usage delta
     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     if let Some(process) = system.process(Pid::from_u32(pid)) {

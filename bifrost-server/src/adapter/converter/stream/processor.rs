@@ -1,6 +1,6 @@
 //! Stream processor for converting OpenAI-format streams to Anthropic-format events
 
-use crate::adapter::converter::stream::state::OpenAIStreamState;
+use crate::adapter::converter::stream::state::OpenAIToAnthropicStreamState;
 use crate::error::LlmMapError;
 use crate::model::StreamChunkTransform;
 use serde_json::{Value, json};
@@ -13,36 +13,36 @@ use std::cell::UnsafeCell;
 /// `stream_state` is wrapped in `UnsafeCell` to allow interior mutability without
 /// any locking overhead. This is sound under the following architectural guarantee:
 ///
-/// - One `OpenAIStreamProcessor` instance is created per request.
+/// - One [`OpenAIToAnthropicStreamProcessor`] instance is created per request.
 /// - All method calls on that instance occur sequentially; no two call-sites
 ///   ever execute concurrently on the same instance.
 ///
 /// Consequently there is never more than one live `&` or `&mut` reference to
 /// `stream_state` at a time, which is the only condition `UnsafeCell` requires.
 /// Violating this invariant is undefined behavior.
-pub struct OpenAIStreamProcessor {
-    stream_state: UnsafeCell<OpenAIStreamState>,
+pub struct OpenAIToAnthropicStreamProcessor {
+    stream_state: UnsafeCell<OpenAIToAnthropicStreamState>,
 }
 
 // SAFETY: The processor is never shared across threads concurrently.
 // Each request owns its own instance and drives it from a single async task.
-unsafe impl Sync for OpenAIStreamProcessor {}
+unsafe impl Sync for OpenAIToAnthropicStreamProcessor {}
 
 // SAFETY: Ownership may cross thread boundaries at Tokio await points, but only
-// one thread holds the processor at any given moment, and `OpenAIStreamState`
+// one thread holds the processor at any given moment, and `OpenAIToAnthropicStreamState`
 // contains no thread-local state.
-unsafe impl Send for OpenAIStreamProcessor {}
+unsafe impl Send for OpenAIToAnthropicStreamProcessor {}
 
-impl Default for OpenAIStreamProcessor {
+impl Default for OpenAIToAnthropicStreamProcessor {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl OpenAIStreamProcessor {
+impl OpenAIToAnthropicStreamProcessor {
     pub fn new() -> Self {
         Self {
-            stream_state: UnsafeCell::new(OpenAIStreamState::new()),
+            stream_state: UnsafeCell::new(OpenAIToAnthropicStreamState::new()),
         }
     }
 
@@ -52,7 +52,7 @@ impl OpenAIStreamProcessor {
     /// Upheld because every `state_mut()` call is a single-expression statement
     /// whose returned reference expires before the next statement executes.
     #[inline(always)]
-    fn state(&self) -> &OpenAIStreamState {
+    fn state(&self) -> &OpenAIToAnthropicStreamState {
         unsafe { &*self.stream_state.get() }
     }
 
@@ -63,7 +63,7 @@ impl OpenAIStreamProcessor {
     /// across any other `state()` / `state_mut()` call.
     #[inline(always)]
     #[allow(clippy::mut_from_ref)]
-    fn state_mut(&self) -> &mut OpenAIStreamState {
+    fn state_mut(&self) -> &mut OpenAIToAnthropicStreamState {
         unsafe { &mut *self.stream_state.get() }
     }
 
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_tool_call_streaming_conversion() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk = json!({
             "id": "chatcmpl-123",
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_thinking_then_tool_call_streaming() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk1 = json!({
             "id": "chatcmpl-123",
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_tool_call_with_finish_reason() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk = json!({
             "id": "chatcmpl-123",
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_usage_extraction_with_usage_in_message_start() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk = json!({
             "id": "chatcmpl-123",
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_usage_extraction_with_usage_in_final_chunk() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk1 = json!({
             "id": "chatcmpl-123",
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_usage_extraction_without_usage_fallback() {
-        let processor = OpenAIStreamProcessor::new();
+        let processor = OpenAIToAnthropicStreamProcessor::new();
 
         let chunk = json!({
             "id": "chatcmpl-123",

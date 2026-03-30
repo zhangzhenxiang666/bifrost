@@ -1,14 +1,16 @@
 use crate::adapter::Adapter;
-use crate::adapter::converter::{self, stream::OpenAIStreamProcessor};
+use crate::adapter::converter::anthropic_openai::request::anthropic_to_openai_request;
+use crate::adapter::converter::anthropic_openai::response::openai_to_anthropic_response;
+use crate::adapter::converter::stream::OpenAIToAnthropicStreamProcessor;
 use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
-use crate::model::{RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
 use async_trait::async_trait;
 use http::HeaderMap;
 use serde_json::Value;
 
 pub struct AnthropicToOpenAIAdapter {
-    stream_processor: OpenAIStreamProcessor,
+    stream_processor: OpenAIToAnthropicStreamProcessor,
 }
 
 impl Default for AnthropicToOpenAIAdapter {
@@ -20,7 +22,7 @@ impl Default for AnthropicToOpenAIAdapter {
 impl AnthropicToOpenAIAdapter {
     pub fn new() -> Self {
         Self {
-            stream_processor: OpenAIStreamProcessor::new(),
+            stream_processor: OpenAIToAnthropicStreamProcessor::new(),
         }
     }
 }
@@ -30,17 +32,15 @@ impl Adapter for AnthropicToOpenAIAdapter {
     type Error = LlmMapError;
     async fn transform_request(
         &self,
-        body: Value,
-        provider_config: &ProviderConfig,
-        _headers: &http::HeaderMap,
+        context: RequestContext<'_>,
     ) -> Result<RequestTransform, Self::Error> {
-        let body = converter::anthropic_openai::anthropic_to_openai_request(body)?;
+        let body = anthropic_to_openai_request(context.body)?;
         let mut headers = HeaderMap::new();
 
         headers.insert(
             http::header::AUTHORIZATION,
             http::header::HeaderValue::from_bytes(
-                format!("Bearer {}", provider_config.api_key).as_bytes(),
+                format!("Bearer {}", context.provider_config.api_key).as_bytes(),
             )
             .unwrap(),
         );
@@ -48,7 +48,7 @@ impl Adapter for AnthropicToOpenAIAdapter {
         Ok(RequestTransform::new(body)
             .with_headers(headers)
             .with_url(crate::util::join_url_paths(
-                &provider_config.base_url,
+                &context.provider_config.base_url,
                 "chat/completions",
             )))
     }
@@ -59,7 +59,7 @@ impl Adapter for AnthropicToOpenAIAdapter {
         _status: http::StatusCode,
         _headers: &http::HeaderMap,
     ) -> Result<ResponseTransform, Self::Error> {
-        let body = converter::anthropic_openai::openai_to_anthropic_response(body)?;
+        let body = openai_to_anthropic_response(body)?;
         Ok(ResponseTransform::new(body))
     }
 

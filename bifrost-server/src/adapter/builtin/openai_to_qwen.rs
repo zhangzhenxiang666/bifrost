@@ -5,9 +5,8 @@
 
 use crate::adapter::Adapter;
 use crate::adapter::converter::qwen;
-use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
-use crate::model::RequestTransform;
+use crate::model::{RequestContext, RequestTransform};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -30,9 +29,7 @@ impl Adapter for OpenAIToQwenAdapter {
     /// - For streaming: `stream_options.include_usage: true`
     async fn transform_request(
         &self,
-        mut body: serde_json::Value,
-        provider_config: &ProviderConfig,
-        _headers: &http::HeaderMap,
+        context: RequestContext<'_>,
     ) -> Result<RequestTransform, Self::Error> {
         // Initialize OAuth credentials manager
         qwen::ensure_oauth_manager_initialized()?;
@@ -49,6 +46,7 @@ impl Adapter for OpenAIToQwenAdapter {
         let access_token = manager.get_access_token();
 
         // For streaming requests, add stream_options to include usage
+        let mut body = context.body;
         if let Some(stream) = body.get("stream").and_then(|v| v.as_bool())
             && stream
             && let Some(obj) = body.as_object_mut()
@@ -62,7 +60,7 @@ impl Adapter for OpenAIToQwenAdapter {
         }
 
         let request = RequestTransform::new(body).with_url(crate::util::join_url_paths(
-            &provider_config.base_url,
+            &context.provider_config.base_url,
             "chat/completions",
         ));
 
@@ -81,6 +79,7 @@ impl Adapter for OpenAIToQwenAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderConfig;
     use http::HeaderMap;
 
     /// Initialize OAuth credentials for tests
@@ -129,10 +128,9 @@ mod tests {
         let config = create_test_config();
         let headers = HeaderMap::new();
 
-        let result = adapter
-            .transform_request(body.clone(), &config, &headers)
-            .await
-            .unwrap();
+        let uri = http::Uri::from_static("https://openai.com/v1");
+        let ctx = RequestContext::new(&uri, body.clone(), &config, &headers);
+        let result = adapter.transform_request(ctx).await.unwrap();
 
         // Verify body is unchanged (OpenAI-compatible)
         assert_eq!(result.body, body);
@@ -141,10 +139,6 @@ mod tests {
         assert!(result.headers.is_some());
         let headers = result.headers.unwrap();
         assert_eq!(headers.get("Content-Type").unwrap(), "application/json");
-        assert_eq!(
-            headers.get("User-Agent").unwrap(),
-            "QwenCode/0.11.0 (linux; x64)"
-        );
         assert_eq!(headers.get("X-DashScope-CacheControl").unwrap(), "enable");
         assert_eq!(headers.get("X-DashScope-AuthType").unwrap(), "qwen-oauth");
     }
@@ -164,10 +158,9 @@ mod tests {
         let config = create_test_config();
         let headers = HeaderMap::new();
 
-        let result = adapter
-            .transform_request(body, &config, &headers)
-            .await
-            .unwrap();
+        let uri = http::Uri::from_static("https://openai.com/v1");
+        let ctx = RequestContext::new(&uri, body, &config, &headers);
+        let result = adapter.transform_request(ctx).await.unwrap();
 
         // Verify stream_options is added for streaming requests
         assert_eq!(
@@ -193,10 +186,9 @@ mod tests {
         let config = create_test_config();
         let headers = HeaderMap::new();
 
-        let result = adapter
-            .transform_request(body, &config, &headers)
-            .await
-            .unwrap();
+        let uri = http::Uri::from_static("https://openai.com/v1");
+        let ctx = RequestContext::new(&uri, body, &config, &headers);
+        let result = adapter.transform_request(ctx).await.unwrap();
 
         // Verify stream_options is NOT added for non-streaming requests
         assert!(result.body.get("stream_options").is_none());

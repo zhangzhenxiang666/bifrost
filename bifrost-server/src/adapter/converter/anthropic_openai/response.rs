@@ -2,7 +2,7 @@
 //!
 //! This module provides functions to convert OpenAI API response format to Anthropic format.
 
-use super::create_null_string;
+use crate::adapter::converter::create_null_string;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 

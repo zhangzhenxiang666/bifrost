@@ -23,13 +23,13 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
 
     // Extract and transform tools (if present)
     if let Some(Value::Array(tools)) = obj.remove("tools") {
-        let transformed_tools = transform_tools_anthropic_to_openai(tools)?;
+        let transformed_tools = transform_tools_anthropic_to_openai(tools);
         result.insert("tools".to_string(), transformed_tools);
     }
 
     // Extract and transform tool_choice (if present)
     if let Some(tool_choice) = obj.remove("tool_choice") {
-        let transformed = transform_tool_choice_anthropic_to_openai(tool_choice)?;
+        let transformed = transform_tool_choice_anthropic_to_openai(tool_choice);
         result.insert("tool_choice".to_string(), transformed);
     }
 
@@ -79,7 +79,7 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
 
     // Transform each message
     for msg in messages {
-        let transformed = transform_message_anthropic_to_openai(msg)?;
+        let transformed = transform_message_anthropic_to_openai(msg);
         openai_messages.extend(transformed);
     }
 

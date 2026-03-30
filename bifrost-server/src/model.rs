@@ -1,5 +1,36 @@
 //! Types module for shared data structures
 
+use crate::config::ProviderConfig;
+use http::HeaderMap;
+use http::Uri;
+
+/// Context for request transformation containing all input parameters.
+///
+/// Adapters can access URI, body, provider config, and headers through this struct.
+/// New fields can be added here in the future without changing existing adapter implementations.
+pub struct RequestContext<'a> {
+    pub uri: &'a Uri,
+    pub body: serde_json::Value,
+    pub provider_config: &'a ProviderConfig,
+    pub headers: &'a HeaderMap,
+}
+
+impl<'a> RequestContext<'a> {
+    pub fn new(
+        uri: &'a Uri,
+        body: serde_json::Value,
+        provider_config: &'a ProviderConfig,
+        headers: &'a HeaderMap,
+    ) -> Self {
+        Self {
+            uri,
+            body,
+            provider_config,
+            headers,
+        }
+    }
+}
+
 pub struct RequestTransform {
     pub body: serde_json::Value,
     pub url: Option<String>,
@@ -90,47 +121,5 @@ impl StreamChunkTransform {
     /// Get all events for final processing
     pub fn into_events(self) -> Vec<(serde_json::Value, Option<String>)> {
         self.events
-    }
-}
-
-/// Function type for building endpoint URLs
-pub type UrlBuilder = dyn Fn(&str, &str) -> String + Send + Sync;
-
-/// Configuration for an endpoint
-pub struct EndpointConfig {
-    /// Default URL path pattern for this endpoint
-    pub default_path_pattern: String,
-    /// Custom URL builder function (optional)
-    pub url_builder: Option<Box<UrlBuilder>>,
-}
-
-impl EndpointConfig {
-    /// Create a new endpoint configuration with a simple path pattern
-    pub fn new(default_path_pattern: impl Into<String>) -> Self {
-        Self {
-            default_path_pattern: default_path_pattern.into(),
-            url_builder: None,
-        }
-    }
-
-    /// Create a new endpoint configuration with a custom URL builder
-    pub fn with_builder<F>(url_builder: F) -> Self
-    where
-        F: Fn(&str, &str) -> String + Send + Sync + 'static,
-    {
-        Self {
-            default_path_pattern: String::new(),
-            url_builder: Some(Box::new(url_builder)),
-        }
-    }
-
-    /// Build the URL for this endpoint
-    pub fn build_url(&self, base_url: &str, model: &str) -> String {
-        if let Some(builder) = &self.url_builder {
-            builder(base_url, model)
-        } else {
-            let path = self.default_path_pattern.replace("{model}", model);
-            crate::util::join_url_paths(base_url, &path)
-        }
     }
 }

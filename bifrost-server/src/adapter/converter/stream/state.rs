@@ -4,7 +4,7 @@
 //! streaming responses to Anthropic-format streaming events.
 
 /// Unified stream state for OpenAI → Anthropic stream conversion
-pub struct OpenAIStreamState {
+pub struct OpenAIToAnthropicStreamState {
     /// Next block index to assign
     next_block_index: usize,
     /// OpenAI tool_call index → Anthropic block index.
@@ -23,7 +23,7 @@ const MESSAGE_STARTED: u8 = 0b001;
 const THINKING_STARTED: u8 = 0b010;
 const TEXT_STARTED: u8 = 0b100;
 
-impl OpenAIStreamState {
+impl OpenAIToAnthropicStreamState {
     /// Create a new stream state
     pub fn new() -> Self {
         Self {
@@ -141,7 +141,7 @@ impl OpenAIStreamState {
     }
 }
 
-impl Default for OpenAIStreamState {
+impl Default for OpenAIToAnthropicStreamState {
     fn default() -> Self {
         Self::new()
     }

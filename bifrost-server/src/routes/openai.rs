@@ -1,23 +1,16 @@
 //! OpenAI-compatible route for chat completions endpoint
 
 use crate::error::Result;
-use crate::model::EndpointConfig;
 use crate::routes::handler;
 use crate::state::AppState;
 use axum::{Json, extract::State};
 use serde_json::Value;
-use std::sync::OnceLock;
-
-/// Endpoint configuration for OpenAI-compatible endpoints
-fn openai_config() -> &'static EndpointConfig {
-    static CONFIG: OnceLock<EndpointConfig> = OnceLock::new();
-    CONFIG.get_or_init(|| EndpointConfig::new("/chat/completions"))
-}
 
 /// OpenAI-compatible chat completions endpoint.
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<AppState>,
+    uri: http::Uri,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response> {
@@ -26,7 +19,7 @@ pub async fn chat_completions(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, &headers, body, openai_config(), is_stream).await
+    handler::handle_llm_request(&state, headers, body, uri, is_stream).await
 }
 
 #[cfg(test)]
@@ -38,7 +31,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serde_json::json;
     use std::collections::HashMap;
-    use std::sync::Arc;
     use tower::util::ServiceExt;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -66,9 +58,7 @@ mod tests {
     fn create_test_state(mock_server_uri: &str) -> AppState {
         let config = create_test_config(mock_server_uri);
         let registry = ProviderRegistry::from_config(&config);
-        AppState {
-            registry: Arc::new(registry),
-        }
+        AppState::from(registry)
     }
 
     #[tokio::test]
@@ -96,14 +86,14 @@ mod tests {
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
             .route(
-                "/v1/chat/completions",
+                "/openai/chat/completions",
                 axum::routing::post(chat_completions),
             )
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/openai/chat/completions")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({
@@ -141,14 +131,14 @@ data: [DONE]\n\n";
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
             .route(
-                "/v1/chat/completions",
+                "/openai/chat/completions",
                 axum::routing::post(chat_completions),
             )
             .with_state(state);
 
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/chat/completions")
+            .uri("/openai/chat/completions")
             .header("Content-Type", "application/json")
             .body(Body::from(
                 serde_json::to_string(&json!({

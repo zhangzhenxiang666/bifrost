@@ -6,7 +6,7 @@
 use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
 use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
-use crate::model::{RequestTransform, StreamChunkTransform};
+use crate::model::{RequestContext, RequestTransform, StreamChunkTransform};
 use crate::util;
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -25,36 +25,34 @@ impl Adapter for PassthroughAdapter {
 
     async fn transform_request(
         &self,
-        body: serde_json::Value,
-        provider_config: &ProviderConfig,
-        _headers: &http::HeaderMap,
+        context: RequestContext<'_>,
     ) -> Result<RequestTransform, Self::Error> {
-        let mut request = RequestTransform::new(body);
+        let mut request = RequestTransform::new(context.body);
         let mut headers = HeaderMap::new();
 
-        match provider_config.endpoint {
+        request.url = Some(util::join_url_paths(
+            &context.provider_config.base_url,
+            util::extract_endpoint(context.uri.path())
+                .ok_or_else(|| LlmMapError::Validation("Invalid endpoint".to_string()))?,
+        ));
+
+        match context.provider_config.endpoint {
             Endpoint::OpenAI => {
-                request.url = Some(util::join_url_paths(
-                    &provider_config.base_url,
-                    "chat/completions",
-                ));
                 headers.insert(
                     http::header::AUTHORIZATION,
                     http::header::HeaderValue::from_bytes(
-                        format!("Bearer {}", provider_config.api_key).as_bytes(),
+                        format!("Bearer {}", context.provider_config.api_key).as_bytes(),
                     )
                     .unwrap(),
                 );
             }
             Endpoint::Anthropic => {
-                request.url = Some(util::join_url_paths(
-                    &provider_config.base_url,
-                    "v1/messages",
-                ));
                 headers.insert(
                     X_API_KEY.clone(),
-                    http::header::HeaderValue::from_bytes(provider_config.api_key.as_bytes())
-                        .unwrap(),
+                    http::header::HeaderValue::from_bytes(
+                        context.provider_config.api_key.as_bytes(),
+                    )
+                    .unwrap(),
                 );
                 headers.insert(ANTHROPIC_VERSION.0.clone(), ANTHROPIC_VERSION.1.clone());
                 headers.insert(
@@ -70,9 +68,9 @@ impl Adapter for PassthroughAdapter {
         &self,
         chunk: serde_json::Value,
         event: &str,
-        provider_config: &ProviderConfig,
+        _provider_config: &ProviderConfig,
     ) -> Result<StreamChunkTransform, Self::Error> {
-        if !event.is_empty() && provider_config.endpoint == Endpoint::Anthropic {
+        if !event.is_empty() {
             Ok(StreamChunkTransform::new_with_event(chunk, event))
         } else {
             Ok(StreamChunkTransform::new(chunk))
@@ -105,10 +103,9 @@ mod tests {
         };
         let headers = HeaderMap::new();
 
-        let result = adapter
-            .transform_request(body.clone(), &config, &headers)
-            .await
-            .unwrap();
+        let uri = http::Uri::from_static("/openai/chat/completions");
+        let ctx = RequestContext::new(&uri, body.clone(), &config, &headers);
+        let result = adapter.transform_request(ctx).await.unwrap();
 
         assert_eq!(result.body, body);
         // Verify URL is set based on endpoint type

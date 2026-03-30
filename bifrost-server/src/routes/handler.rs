@@ -2,7 +2,7 @@
 
 use crate::adapter::OnionExecutor;
 use crate::error::{LlmMapError, Result};
-use crate::model::{EndpointConfig, RequestTransform};
+use crate::model::RequestTransform;
 use crate::state::AppState;
 use crate::util;
 use axum::response::IntoResponse;
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+
 /// Context for processing provider responses
 pub struct RequestContext {
     pub url: String,
@@ -31,9 +32,9 @@ pub struct RequestContext {
 /// 3. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
 pub async fn execute_provider_request(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     mut body: Value,
-    config: &EndpointConfig,
+    uri: http::Uri,
 ) -> Result<RequestContext> {
     let model_value = body
         .get("model")
@@ -48,7 +49,11 @@ pub async fn execute_provider_request(
         .get(provider_id)
         .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
 
-    let url = config.build_url(&provider.base_url, model_name);
+    let url = util::join_url_paths(
+        &provider.base_url,
+        util::extract_endpoint(uri.path())
+            .ok_or_else(|| LlmMapError::Validation("Invalid endpoint".to_string()))?,
+    );
 
     // Update model field to use model_name only (without provider prefix)
     // Safety: We just verified model exists at line 107-111
@@ -62,7 +67,7 @@ pub async fn execute_provider_request(
         mut body,
         url: transform_url,
         headers: transform_headers,
-    } = executor.execute_request(body, headers).await?;
+    } = executor.execute_request(&uri, body, &headers).await?;
 
     let final_url = transform_url.unwrap_or(url);
 
@@ -146,6 +151,7 @@ pub async fn process_stream_request(
     // If so, return error response instead of streaming
     if !status_code.is_success() {
         let body = response.bytes().await.map_err(LlmMapError::Http)?;
+
         return Ok((status_code, upstream_headers, body).into_response());
     }
 
@@ -238,28 +244,18 @@ pub async fn process_json_request(
     let response = state
         .registry
         .http_client()
-        .send_request(&ctx.url, ctx.body, ctx.headers)
+        .send_request(&ctx.url, ctx.body.clone(), ctx.headers.clone())
         .await
         .map_err(LlmMapError::Http)?;
-    let upstream_headers = response.headers().clone();
+    let mut upstream_headers = response.headers().clone();
     let status_code = response.status();
 
     if !status_code.is_success() {
         let body = response.bytes().await.map_err(LlmMapError::Http)?;
+
         return Ok((status_code, upstream_headers, body).into_response());
     }
 
-    // Build headers map, excluding content-length and transfer-encoding
-    // since axum will recalculate these based on the transformed response
-    let mut headers = HeaderMap::new();
-    for (key, value) in upstream_headers {
-        if let Some(header_key) = key {
-            let key_name = header_key.as_str();
-            if key_name != "content-length" && key_name != "transfer-encoding" {
-                headers.insert(header_key, value);
-            }
-        }
-    }
     let response_json: Value = response
         .json()
         .await
@@ -267,65 +263,31 @@ pub async fn process_json_request(
 
     let res = ctx
         .executor
-        .execute_response(response_json, status_code, &headers)
+        .execute_response(response_json, status_code, &upstream_headers)
         .await?;
 
     let state_code = res.status.unwrap_or(status_code);
 
     if let Some(hs) = res.headers {
-        headers.extend(hs);
+        upstream_headers.extend(hs);
     }
 
-    Ok((state_code, headers, axum::Json(res.body)).into_response())
+    Ok((state_code, upstream_headers, axum::Json(res.body)).into_response())
 }
 
 /// Helper function to handle both streaming and non-streaming requests
 pub async fn handle_llm_request(
     state: &AppState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     body: Value,
-    config: &EndpointConfig,
+    uri: http::Uri,
     is_stream: bool,
 ) -> Result<axum::response::Response> {
-    let ctx = execute_provider_request(state, headers, body, config).await?;
+    let ctx = execute_provider_request(state, headers, body, uri).await?;
 
     if is_stream {
         process_stream_request(state, ctx).await
     } else {
         process_json_request(state, ctx).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_model_with_provider() {
-        let result = util::parse_model("qwen-code@gpt-4");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), ("qwen-code", "gpt-4"));
-    }
-
-    #[test]
-    fn test_parse_model_without_provider() {
-        assert!(util::parse_model("gpt-4").is_err());
-    }
-
-    #[test]
-    fn test_join_url_paths() {
-        assert_eq!(
-            util::join_url_paths("https://api.example.com/", "/v1/chat"),
-            "https://api.example.com/v1/chat"
-        );
-    }
-
-    #[test]
-    fn test_endpoint_config_build_url_with_model_placeholder() {
-        let config = EndpointConfig::new("/v1/models/{model}:generateContent");
-        assert_eq!(
-            config.build_url("https://generativelanguage.googleapis.com", "gemini-pro"),
-            "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent"
-        );
     }
 }

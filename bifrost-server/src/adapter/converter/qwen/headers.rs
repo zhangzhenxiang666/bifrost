@@ -13,13 +13,13 @@ pub fn add_qwen_headers(auth_header: &str) -> Result<http::HeaderMap, LlmMapErro
     );
     headers.insert(
         http::header::USER_AGENT,
-        "QwenCode/0.11.0 (linux; x64)".parse().unwrap(),
+        "QwenCode/0.13.1 (linux; x64)".parse().unwrap(),
     );
     headers.insert(http::header::ACCEPT, "application/json".parse().unwrap());
     headers.insert("X-DashScope-CacheControl", "enable".parse().unwrap());
     headers.insert(
         "X-DashScope-UserAgent",
-        "QwenCode/0.11.0 (linux; x64)".parse().unwrap(),
+        "QwenCode/0.13.1 (linux; x64)".parse().unwrap(),
     );
     headers.insert("X-DashScope-AuthType", "qwen-oauth".parse().unwrap());
     headers.insert(
