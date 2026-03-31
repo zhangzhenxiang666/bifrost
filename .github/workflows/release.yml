@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            suffix: linux-amd64
+            use_cross: false
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            suffix: linux-aarch64
+            use_cross: true
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            suffix: darwin-amd64
+            use_cross: false
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            suffix: darwin-aarch64
+            use_cross: false
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            suffix: windows-amd64
+            use_cross: false
+            archive: zip
+            rustflags: "-C target-feature=+crt-static"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install musl tools (Linux)
+        if: contains(matrix.target, 'linux-musl') && !matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install Cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build Release Binaries
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p bifrost -p bifrost-server
+          else
+            cargo build --release -p bifrost -p bifrost-server
+          fi
+
+      - name: Prepare binaries
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            cp target/${{ matrix.target }}/release/bifrost.exe release/bifrost-${{ matrix.suffix }}.exe
+            cp target/${{ matrix.target }}/release/bifrost-server.exe release/bifrost-server-${{ matrix.suffix }}.exe
+          else
+            cp target/${{ matrix.target }}/release/bifrost release/bifrost-${{ matrix.suffix }}
+            cp target/${{ matrix.target }}/release/bifrost-server release/bifrost-server-${{ matrix.suffix }}
+          fi
+
+      - name: Create archive
+        shell: bash
+        working-directory: release
+        run: |
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar czf bifrost-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
+          else
+            powershell -Command "Compress-Archive -Path 'bifrost-${{ matrix.suffix }}.exe', 'bifrost-server-${{ matrix.suffix }}.exe' -DestinationPath 'bifrost-${{ matrix.suffix }}.zip'"
+          fi
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
