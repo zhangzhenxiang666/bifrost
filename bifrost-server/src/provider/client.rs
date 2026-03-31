@@ -3,13 +3,38 @@
 //! Provides a wrapper around reqwest::Client with support for
 //! both non-streaming and streaming requests.
 
-use http::HeaderMap;
+use http::{HeaderMap, StatusCode};
+use rand::Rng;
 use reqwest::{Client, Response};
 use serde_json::Value;
+use std::time::Duration;
 
-/// HTTP client wrapper with configurable timeout
+/// Retry configuration for HTTP requests
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_retries: u32,
+    /// Base delay for exponential backoff in milliseconds
+    pub backoff_base_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 5,
+            backoff_base_ms: 100,
+        }
+    }
+}
+
+/// HTTP client wrapper with configurable timeout and retry
 #[derive(Clone)]
-pub struct HttpClient(Client);
+pub struct HttpClient {
+    inner: Client,
+    #[expect(dead_code)]
+    timeout_secs: u64,
+    retry_config: RetryConfig,
+}
 
 impl HttpClient {
     /// Create a new HttpClient with the specified timeout in seconds and optional proxy
@@ -18,15 +43,22 @@ impl HttpClient {
     /// Panics if the proxy URL is invalid or if the HTTP client fails to build.
     /// In production, use `try_new()` instead for proper error handling.
     pub fn new(timeout_secs: u64, proxy: Option<&str>) -> Self {
-        Self::try_new(timeout_secs, proxy).expect("Failed to create HTTP client")
+        Self::try_new(timeout_secs, proxy, RetryConfig::default())
+            .expect("Failed to create HTTP client")
+    }
+
+    /// Create a new HttpClient with retry configuration
+    pub fn with_retry(timeout_secs: u64, proxy: Option<&str>, retry_config: RetryConfig) -> Self {
+        Self::try_new(timeout_secs, proxy, retry_config).expect("Failed to create HTTP client")
     }
 
     /// Create a new HttpClient with proper error handling
     pub fn try_new(
         timeout_secs: u64,
         proxy: Option<&str>,
+        retry_config: RetryConfig,
     ) -> Result<Self, crate::error::LlmMapError> {
-        let mut builder = Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+        let mut builder = Client::builder().timeout(Duration::from_secs(timeout_secs));
 
         if let Some(proxy_url) = proxy {
             let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| {
@@ -45,10 +77,57 @@ impl HttpClient {
                 e
             ))
         })?;
-        Ok(Self(client))
+        Ok(Self {
+            inner: client,
+            timeout_secs,
+            retry_config,
+        })
     }
 
-    /// Send a non-streaming POST request
+    /// Check if a status code indicates the request should be retried
+    ///
+    /// Returns true for:
+    /// - 429 Too Many Requests
+    /// - 500 Internal Server Error
+    /// - 502 Bad Gateway
+    /// - 503 Service Unavailable
+    /// - 504 Gateway Timeout
+    pub fn should_retry_status(status: StatusCode) -> bool {
+        matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS  // 429
+                | StatusCode::INTERNAL_SERVER_ERROR  // 500
+                | StatusCode::BAD_GATEWAY             // 502
+                | StatusCode::SERVICE_UNAVAILABLE     // 503
+                | StatusCode::GATEWAY_TIMEOUT // 504
+        )
+    }
+
+    /// Check if an error is retryable (network errors, timeouts, etc.)
+    pub fn is_retryable_error(error: &reqwest::Error) -> bool {
+        if error.is_timeout() {
+            return true;
+        }
+        if error.is_connect() {
+            return true;
+        }
+        if error.is_request() {
+            return true;
+        }
+        // Also retry on server errors (checked via status code in response)
+        false
+    }
+
+    /// Calculate exponential backoff delay with jitter
+    ///
+    /// delay = base_ms * 2^attempt + random_jitter
+    pub fn calculate_backoff(attempt: u32, base_ms: u64) -> Duration {
+        let exponential_delay = base_ms * 2u64.saturating_pow(attempt.min(10));
+        let jitter = rand::thread_rng().gen_range(0..exponential_delay / 2 + 1);
+        Duration::from_millis(exponential_delay + jitter)
+    }
+
+    /// Send a non-streaming POST request with retry
     ///
     /// # Arguments
     /// * `url` - The target URL
@@ -63,7 +142,66 @@ impl HttpClient {
         body: Value,
         headers: HeaderMap,
     ) -> Result<Response, reqwest::Error> {
-        self.0.post(url).headers(headers).json(&body).send().await
+        self.send_request_with_retry(url, body, headers).await
+    }
+
+    /// Send a request with exponential backoff retry
+    async fn send_request_with_retry(
+        &self,
+        url: &str,
+        body: Value,
+        headers: HeaderMap,
+    ) -> Result<Response, reqwest::Error> {
+        let mut attempt = 0;
+
+        loop {
+            let response = self
+                .inner
+                .post(url)
+                .headers(headers.clone())
+                .json(&body)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if Self::should_retry_status(status) && attempt < self.retry_config.max_retries
+                    {
+                        attempt += 1;
+                        let delay =
+                            Self::calculate_backoff(attempt, self.retry_config.backoff_base_ms);
+                        tracing::warn!(
+                            "Request failed with status {}, retrying in {:?} (attempt {}/{})",
+                            status,
+                            delay,
+                            attempt,
+                            self.retry_config.max_retries
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    if Self::is_retryable_error(&e) && attempt < self.retry_config.max_retries {
+                        attempt += 1;
+                        let delay =
+                            Self::calculate_backoff(attempt, self.retry_config.backoff_base_ms);
+                        tracing::warn!(
+                            "Request error: {}, retrying in {:?} (attempt {}/{})",
+                            e,
+                            delay,
+                            attempt,
+                            self.retry_config.max_retries
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 }
 

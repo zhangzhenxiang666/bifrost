@@ -201,6 +201,9 @@ pub struct ProviderConfig {
     /// Optional model-specific configurations
     #[serde(default)]
     pub models: Option<Vec<ModelConfig>>,
+    /// Optional list of headers to exclude from original request (not adapter headers)
+    #[serde(default)]
+    pub exclude_headers: Option<Vec<String>>,
 }
 
 /// Server configuration
@@ -211,6 +214,15 @@ pub struct ServerConfig {
     /// Optional proxy URL
     #[serde(default)]
     pub proxy: Option<String>,
+    /// Response timeout in seconds (default: 600)
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Maximum number of retries for failed requests (default: 5)
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    /// Base delay for exponential backoff in milliseconds (default: 100)
+    #[serde(default)]
+    pub retry_backoff_base_ms: Option<u64>,
 }
 
 /// Root configuration structure
@@ -236,6 +248,9 @@ impl Default for ServerConfig {
         ServerConfig {
             port: 5564,
             proxy: None,
+            timeout_secs: None,
+            max_retries: None,
+            retry_backoff_base_ms: None,
         }
     }
 }
@@ -577,6 +592,7 @@ mod tests {
             headers: None,
             body: None,
             models: None,
+            exclude_headers: None,
         }
     }
 
@@ -598,6 +614,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -628,6 +647,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -650,6 +672,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -677,6 +702,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -698,6 +726,9 @@ mod tests {
             server: ServerConfig {
                 port: 0,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -725,6 +756,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 
@@ -750,6 +784,9 @@ mod tests {
             server: ServerConfig {
                 port: 5564,
                 proxy: None,
+                timeout_secs: None,
+                max_retries: None,
+                retry_backoff_base_ms: None,
             },
         };
 

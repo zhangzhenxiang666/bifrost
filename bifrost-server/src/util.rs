@@ -3,6 +3,41 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use std::pin::Pin;
 use tokio_stream::Stream;
 
+const EXCLUDED_HEADERS: &[&str] = &[
+    "host",
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "te",
+    "trailer",
+    "upgrade",
+    "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "content-length",
+    "accept-encoding",
+    "authorization",
+    "x-api-key",
+];
+
+/// Remove excluded headers from the HeaderMap, including both hardcoded headers
+/// and dynamically configured headers from exclude_headers config.
+pub fn remove_excluded_headers(
+    headers: &mut http::header::HeaderMap,
+    extra_exclude_headers: Option<&[String]>,
+) {
+    for key in EXCLUDED_HEADERS {
+        headers.remove(*key);
+    }
+    if let Some(extra_headers) = extra_exclude_headers {
+        for header_name in extra_headers {
+            if let Ok(key) = header_name.parse::<http::header::HeaderName>() {
+                headers.remove(key);
+            }
+        }
+    }
+}
+
 pub fn extend_overwrite(base: &mut http::header::HeaderMap, other: http::header::HeaderMap) {
     let mut last_key: Option<http::header::HeaderName> = None;
 

@@ -30,6 +30,7 @@ tracing-appender.workspace = true
 daemonize.workspace = true
 dirs.workspace = true
 whoami.workspace = true
+rand.workspace = true
 
 
 [dev-dependencies]

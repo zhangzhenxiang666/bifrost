@@ -47,6 +47,7 @@ mod tests {
                 headers: None,
                 body: None,
                 models: None,
+                exclude_headers: None,
             },
         );
         Config {

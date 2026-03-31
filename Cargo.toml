@@ -32,6 +32,7 @@ async-trait = "0.1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 eventsource-stream = "0.2.3"
 thiserror = "2.0"
+rand = "0.8"
 
 # Shared dependencies
 anyhow = "1.0"

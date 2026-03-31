@@ -32,7 +32,7 @@ pub struct RequestContext {
 /// 3. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
 pub async fn execute_provider_request(
     state: &AppState,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     mut body: Value,
     uri: http::Uri,
 ) -> Result<RequestContext> {
@@ -71,8 +71,13 @@ pub async fn execute_provider_request(
 
     let final_url = transform_url.unwrap_or(url);
 
+    // Remove excluded headers (both hardcoded and user-configured)
+    util::remove_excluded_headers(&mut headers, provider.exclude_headers.as_deref());
+    // Extend final_headers with headers
+    util::extend_overwrite(&mut final_headers, headers);
+
     if let Some(hs) = transform_headers {
-        crate::util::extend_overwrite(&mut final_headers, hs);
+        util::extend_overwrite(&mut final_headers, hs);
     }
 
     // Merge provider-configured body fields into the request body

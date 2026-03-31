@@ -57,6 +57,7 @@ impl OnionExecutor {
     /// #     headers: None,
     /// #     body: None,
     /// #     models: None,
+    /// #     exclude_headers: None,
     /// # };
     /// let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
     ///     Box::new(MyAdapter),
@@ -257,6 +258,7 @@ mod tests {
             headers: None,
             body: None,
             models: None,
+            exclude_headers: None,
         }
     }
 
@@ -328,6 +330,7 @@ mod tests {
             headers: None,
             body: None,
             models: None,
+            exclude_headers: None,
         };
         let executor = OnionExecutor::new(adapters, provider_config);
         let body = serde_json::json!({"test": "data"});

@@ -1,49 +1,39 @@
+# =============================================================================
+# Bifrost Server Configuration
+# =============================================================================
+
 [server]
-port = 5564 # 默认的监听端口为5564
-# proxy = "http://127.0.0.1:8080" # 可选的代理
+port = 5564  # 服务器监听端口
+proxy = "http://127.0.0.1:8080"  # HTTP 代理地址
+timeout_secs = 600  # HTTP 请求超时时间（秒）
+max_retries = 5  # HTTP 请求失败最大重试次数
+retry_backoff_base_ms = 100  # 指数回避基础延迟（毫秒）
 
+# =============================================================================
+# Provider 配置
+# =============================================================================
 
-[provider.qwen-code]
-base_url = "https://portal.qwen.ai/v1" # 必填base_url
-api_key = "any-key"                    # 必填api_key
-endpoint = "openai"                    # 必须填写端点类型, 且目前打算只支持 'openai'
-adapter = "openai-to-qwen"             # 适配器是可选的, 而且可以选择字符串和字符串数组(可填写多个适配器), 当然填写的值必须是我规定的
-# headers = [
-#     { name = "X-QWEN-TOKEN", value = "your-token" },
-# ] # 可选的headers会在请求这个provider中的所有模型中添加请求头
-# body = [
-#     { name = "include-usage", value = true },
-# ] # 可选的body会在请求这个provider中的所有模型中添加body
-# models = [
-#     { name = "coder-model", headers = [
-#         { name = "X-QWEN-TOKEN", value = "your-token" },
-#     ], body = [
-#         { name = "include-usage", value = true },
-#     ] },
-# ] # 这个models字段也是可选的, 如果请求了这个provider中的模型且这个模型在这个字段中定义那么, 就可以可选的添加headers和body和provider中定义的逻辑一样只不过作用的是特定的模型
+[provider.openai-example]
+base_url = "https://api.openai.com/v1"  # 服务提供商的 API 地址
+api_key = "sk-your-key"  # API 密钥
+endpoint = "openai"  # 端点类型，支持 "openai" 或 "anthropic"
+adapter = "passthrough"  # 适配器：passthrough | openai_to_qwen | anthropic_to_qwen | anthropic_to_openai
 
-[provider.an-qwen-code]
+[provider.qwen]
 base_url = "https://portal.qwen.ai/v1"
-api_key = "any-key"
+api_key = "your-qwen-key"
+endpoint = "openai"
+adapter = "openai-to-qwen"
+exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
+
+[provider.anthropic-qwen]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "your-key"
 endpoint = "anthropic"
 adapter = "anthropic-to-qwen"
 
-# 用来测试anthropic转openai的适配器
-[provider.test_anthropic-openai_modelscope]
-base_url = "https://api-inference.modelscope.cn/v1"
-api_key = "ms-0e3811ff-67e1-4bdd-af2f-1cc5e9f4112a"
+[provider.multi-adapter]
+base_url = "https://api.example.com/v1"
+api_key = "your-key"
 endpoint = "anthropic"
-adapter = "anthropic-to-openai"
-
-
-# 用来测试anthropic透传的适配器
-[provider.test_anthropic-pass_ark]
-base_url = "https://ark.cn-beijing.volces.com/api/coding"
-api_key = "ead61730-0bbf-468c-a4e1-b487b6d203cd"
-endpoint = "anthropic"
-
-[provider.test_anthropic-mutil_qwen-code]
-base_url = "https://portal.qwen.ai/v1"
-api_key = "any-key"
-endpoint = "anthropic"
-adapter = ["anthropic-to-openai", "openai-to-qwen"]
+adapter = ["anthropic-to-openai", "openai-to-qwen"]  # 多适配器：按顺序执行

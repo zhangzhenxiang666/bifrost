@@ -72,7 +72,19 @@ fn main() -> anyhow::Result<()> {
                 .ok();
 
             // Load configuration
-            let config = config::Config::from_file(&config_path)?;
+            let mut config = config::Config::from_file(&config_path)?;
+
+            if let Ok(https_proxy) = std::env::var("HTTPS_PROXY")
+                && config.server.proxy.is_none()
+            {
+                config.server.proxy = Some(https_proxy);
+            }
+
+            if let Ok(http_proxy) = std::env::var("HTTP_PROXY")
+                && config.server.proxy.is_none()
+            {
+                config.server.proxy = Some(http_proxy);
+            }
 
             // Run the server
             bifrost_server::run_server(config)?;
