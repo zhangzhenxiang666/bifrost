@@ -116,8 +116,9 @@ endpoint = "openai" | "anthropic"        # 端点类型
 
 | 适配器 | 说明 |
 | ---- | ---- |
-| `openai-to-qwen` | 将 OpenAI 格式转换为 Qwen 格式 |
-| `anthropic-to-qwen` | 将 Anthropic 格式转换为 Qwen 格式 |
+| `passthrough` | 透传，不做任何转换 |
+| `openai-to-qwen` | 将 OpenAI 格式转换为本地 Qwen CLI 格式 |
+| `anthropic-to-qwen` | 将 Anthropic 格式转换为本地 Qwen CLI 格式 |
 | `anthropic-to-openai` | 将 Anthropic 格式转换为 OpenAI 格式 |
 
 ## 架构
@@ -142,7 +143,7 @@ endpoint = "openai" | "anthropic"        # 端点类型
               ┌────────────┴────────────┐
               ▼                         ▼
      ┌────────────────┐         ┌────────────────┐
-     │  OpenAI API    │         │  Qwen CLI      │
+     │   Provider 1   │         │   Provider N   │
      └────────────────┘         └────────────────┘
 ```
 
