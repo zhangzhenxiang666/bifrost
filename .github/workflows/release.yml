@@ -36,12 +36,6 @@ jobs:
             suffix: darwin-aarch64
             use_cross: false
             archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            suffix: windows-amd64
-            use_cross: false
-            archive: zip
-            rustflags: "-C target-feature=+crt-static"
 
     steps:
       - name: Checkout code
@@ -64,36 +58,25 @@ jobs:
 
       - name: Build Release Binaries
         shell: bash
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }} -p bifrost -p bifrost-server
           else
-            cargo build --release -p bifrost -p bifrost-server
+            cargo build --release --target ${{ matrix.target }} -p bifrost -p bifrost-server
           fi
 
       - name: Prepare binaries
         shell: bash
         run: |
           mkdir -p release
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            cp target/${{ matrix.target }}/release/bifrost.exe release/bifrost-${{ matrix.suffix }}.exe
-            cp target/${{ matrix.target }}/release/bifrost-server.exe release/bifrost-server-${{ matrix.suffix }}.exe
-          else
-            cp target/${{ matrix.target }}/release/bifrost release/bifrost-${{ matrix.suffix }}
-            cp target/${{ matrix.target }}/release/bifrost-server release/bifrost-server-${{ matrix.suffix }}
-          fi
+          cp target/${{ matrix.target }}/release/bifrost release/bifrost-${{ matrix.suffix }}
+          cp target/${{ matrix.target }}/release/bifrost-server release/bifrost-server-${{ matrix.suffix }}
 
       - name: Create archive
         shell: bash
         working-directory: release
         run: |
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar czf bifrost-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
-          else
-            powershell -Command "Compress-Archive -Path 'bifrost-${{ matrix.suffix }}.exe', 'bifrost-server-${{ matrix.suffix }}.exe' -DestinationPath 'bifrost-${{ matrix.suffix }}.zip'"
-          fi
+          tar czf bifrost-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2

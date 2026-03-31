@@ -31,13 +31,6 @@ detect_platform() {
             echo "Unsupported macOS architecture: $ARCH" >&2
             exit 1
         fi
-    elif [[ "$OS" == *"MINGW"* ]] || [ "$OS" = "Windows_NT" ]; then
-        if [ "$ARCH" = "x86_64" ]; then
-            BINARY_SUFFIX="windows-amd64"
-        else
-            echo "Unsupported Windows architecture: $ARCH" >&2
-            exit 1
-        fi
     else
         echo "Unsupported OS: $OS" >&2
         exit 1
@@ -92,34 +85,6 @@ install_fish() {
         echo "Added PATH configuration to $config_dir/config.fish"
     else
         echo "PATH configuration already exists in $config_dir/config.fish"
-    fi
-}
-
-install_powershell() {
-    local profile_path="$HOME/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
-    local init_cmd='$env:PATH = "$HOME/.bifrost/bin;$env:PATH"'
-
-    echo "Installing for PowerShell..."
-
-    # Try to find PowerShell profile directory
-    if [ -d "$HOME/Documents/PowerShell" ]; then
-        mkdir -p "$HOME/Documents/PowerShell"
-    fi
-
-    if [ -f "$profile_path" ]; then
-        if ! grep -q ".bifrost/bin" "$profile_path" 2>/dev/null; then
-            echo "" >> "$profile_path"
-            echo "# bifrost" >> "$profile_path"
-            echo "$init_cmd" >> "$profile_path"
-            echo "Added PATH configuration to $profile_path"
-        else
-            echo "PATH configuration already exists in $profile_path"
-        fi
-    else
-        echo "" >> "$profile_path"
-        echo "# bifrost" >> "$profile_path"
-        echo "$init_cmd" >> "$profile_path"
-        echo "Created and added PATH configuration to $profile_path"
     fi
 }
 
@@ -195,8 +160,7 @@ main() {
             bash) SHELL_TYPE="bash" ;;
             zsh) SHELL_TYPE="zsh" ;;
             fish) SHELL_TYPE="fish" ;;
-            pwsh|powershell) SHELL_TYPE="powershell" ;;
-            *) echo "Usage: $0 [bash|zsh|fish|powershell]" >&2; exit 1 ;;
+            *) echo "Usage: $0 [bash|zsh|fish]" >&2; exit 1 ;;
         esac
     else
         # Auto-detect shell
@@ -208,16 +172,6 @@ main() {
                 DETECTED_SHELL="zsh"
             elif command -v fish &>/dev/null; then
                 DETECTED_SHELL="fish"
-            elif command -v pwsh &>/dev/null || command -v powershell &>/dev/null; then
-                SHELL_TYPE="powershell"
-                echo "Detected PowerShell"
-                detect_platform
-                download_and_install
-                install_powershell
-                echo ""
-                echo "Installation complete!"
-                echo "Please restart your shell or run 'source ~/.bashrc' (or equivalent) to use 'bifrost'."
-                exit 0
             fi
         fi
         SHELL_TYPE=$(basename "$DETECTED_SHELL")
@@ -246,7 +200,6 @@ main() {
         bash) install_bash ;;
         zsh) install_zsh ;;
         fish) install_fish ;;
-        powershell) install_powershell ;;
     esac
 
     echo ""
