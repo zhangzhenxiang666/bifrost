@@ -40,6 +40,10 @@ pub enum Commands {
     /// Show the current status of the LLM Map server
     #[command(arg_required_else_help = false)]
     Status,
+
+    /// List all providers from the running server
+    #[command(arg_required_else_help = false)]
+    List,
 }
 
 /// Print a formatted info message with colored label

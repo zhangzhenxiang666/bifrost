@@ -15,8 +15,8 @@ pub mod util;
 
 use crate::middleware::request_logger;
 use crate::provider::registry::ProviderRegistry;
-use crate::routes::{chat_completions, messages};
-use crate::state::AppState;
+use crate::routes::{anthropic::messages, openai::chat_completions, status::status};
+use crate::state::{AppState, get_global_state, set_global_state};
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -42,7 +42,8 @@ async fn server(config: config::Config) -> anyhow::Result<()> {
     info!("Starting server on port {}", port);
 
     let registry = ProviderRegistry::from_config(&config);
-    let state = AppState::new(registry);
+    let proxy = config.server.proxy.clone();
+    set_global_state(AppState::new(registry, proxy));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -58,9 +59,13 @@ async fn server(config: config::Config) -> anyhow::Result<()> {
         .route("/anthropic/v1/messages", axum::routing::post(messages))
         .layer(axum::middleware::from_fn(request_logger));
 
-    let main_router = Router::new().merge(llm_router);
+    let main_router = Router::new()
+        .route("/status", axum::routing::get(status))
+        .merge(llm_router);
 
-    let app = main_router.with_state(state).layer(cors);
+    let app = main_router
+        .with_state(get_global_state().clone())
+        .layer(cors);
 
     // Bind and listen
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

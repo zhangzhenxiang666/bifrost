@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// - Loading provider configurations from the root config
 /// - Providing access to provider information
 /// - Building adapter chains (OnionExecutor) for specific providers
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ProviderRegistry {
     providers: HashMap<String, ProviderConfig>,
     http_client: HttpClient,
@@ -185,6 +185,11 @@ impl ProviderRegistry {
     /// Check if a provider exists in the registry.
     pub fn has_provider(&self, id: &str) -> bool {
         self.providers.contains_key(id)
+    }
+
+    /// Get all providers as a reference to the underlying HashMap.
+    pub fn providers(&self) -> &HashMap<String, ProviderConfig> {
+        &self.providers
     }
 }
 

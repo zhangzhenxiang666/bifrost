@@ -28,7 +28,7 @@ impl Default for RetryConfig {
 }
 
 /// HTTP client wrapper with configurable timeout and retry
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HttpClient {
     inner: Client,
     #[expect(dead_code)]
@@ -152,16 +152,33 @@ impl HttpClient {
         body: Value,
         headers: HeaderMap,
     ) -> Result<Response, reqwest::Error> {
+        self.send_request_fn(|client| client.post(url).headers(headers.clone()).json(&body))
+            .await
+    }
+
+    /// Send a request with custom builder and exponential backoff retry
+    ///
+    /// # Arguments
+    /// * `build_request` - A closure that takes a `&Client` and returns a `RequestBuilder`.
+    ///   Called each retry attempt.
+    ///
+    /// # Example
+    /// ```ignore
+    /// client.send_request_fn(|client| {
+    ///     client
+    ///         .post("https://api.example.com/token")
+    ///         .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+    ///         .body(urlencoded)
+    /// }).await
+    /// ```
+    pub async fn send_request_fn<F>(&self, build_request: F) -> Result<Response, reqwest::Error>
+    where
+        F: Fn(&Client) -> reqwest::RequestBuilder,
+    {
         let mut attempt = 0;
 
         loop {
-            let response = self
-                .inner
-                .post(url)
-                .headers(headers.clone())
-                .json(&body)
-                .send()
-                .await;
+            let response = build_request(&self.inner).send().await;
 
             match response {
                 Ok(resp) => {

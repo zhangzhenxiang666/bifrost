@@ -1,5 +1,6 @@
 use crate::error::LlmMapError;
 use serde::Deserialize;
+use serde::Serialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use std::fmt;
 use std::marker::PhantomData;
@@ -141,7 +142,7 @@ pub struct BodyEntry {
 // =============================================================================
 
 /// Provider endpoint type for API compatibility
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum Endpoint {
@@ -150,6 +151,15 @@ pub enum Endpoint {
     OpenAI,
     /// Anthropic API format
     Anthropic,
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Endpoint::OpenAI => write!(f, "openai"),
+            Endpoint::Anthropic => write!(f, "anthropic"),
+        }
+    }
 }
 
 impl Endpoint {

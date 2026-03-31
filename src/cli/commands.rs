@@ -10,11 +10,44 @@ use super::{
 };
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde::Deserialize;
 use std::fs;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
 use sysinfo::{Pid, System};
+use tabled::{Table, Tabled};
+
+/// Status response from /status endpoint
+#[derive(Debug, Deserialize)]
+struct StatusResponse {
+    proxy: Option<String>,
+    providers: Vec<ProviderInfo>,
+}
+
+/// Provider information from status endpoint
+#[derive(Debug, Deserialize, Tabled, Clone)]
+struct ProviderInfo {
+    name: String,
+    endpoint: String,
+}
+
+/// Get proxy from environment variables (HTTPS_PROXY > HTTP_PROXY)
+fn get_env_proxy() -> Option<String> {
+    std::env::var("HTTPS_PROXY")
+        .ok()
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+}
+
+/// Get status from running server
+fn get_status_from_server(port: u16) -> Result<Option<StatusResponse>> {
+    let url = format!("http://127.0.0.1:{}/status", port);
+    match reqwest::blocking::get(&url) {
+        Ok(resp) => Ok(Some(resp.json::<StatusResponse>()?)),
+        Err(e) if e.is_connect() => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Failed to connect to server: {}", e)),
+    }
+}
 
 /// Get the current process PID from PID file
 pub fn get_stored_pid() -> Option<u32> {
@@ -140,10 +173,12 @@ fn cmd_start_internal() -> Result<()> {
         {
             let config_path = get_config_path()?;
             if let Ok(config) = ServerConfig::from_file(&config_path) {
-                let proxy = config.proxy.as_deref().unwrap_or("None");
-                print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
+                let env_proxy = get_env_proxy();
+                let proxy = config.proxy.clone().or(env_proxy);
+                print_process_table(pid, &name, memory, cpu, Some(config.port), proxy.as_deref());
             } else {
-                print_process_table(pid, &name, memory, cpu, None, None);
+                let env_proxy = get_env_proxy();
+                print_process_table(pid, &name, memory, cpu, None, env_proxy.as_deref());
             }
         }
 
@@ -186,15 +221,16 @@ port = 5564
 
     print_header("Starting Bifrost Server");
 
+    // Determine actual proxy (config takes precedence over environment)
+    let env_proxy = get_env_proxy();
+    let proxy = config.proxy.clone().or(env_proxy);
+
     // Display configuration as table
     let config_rows = vec![
         ("Port", port.to_string()),
         ("Config", config_path.display().to_string()),
         ("Log file", log_file.display().to_string()),
-        (
-            "Proxy",
-            config.proxy.clone().unwrap_or_else(|| "None".to_string()),
-        ),
+        ("Proxy", proxy.unwrap_or_else(|| "None".to_string())),
     ];
     print_kv_table(&config_rows);
     println!();
@@ -386,16 +422,24 @@ pub fn cmd_status() -> Result<()> {
             "Bifrost - Server Status: Running".bold().white().on_green()
         );
         println!();
+
+        // Try to get actual status from server
+        let (proxy, port): (Option<String>, Option<u16>) =
+            if let Some(status) = get_status_from_server(5564).ok().flatten() {
+                (status.proxy, Some(5564))
+            } else {
+                // Fallback to config + environment
+                let config = ServerConfig::from_file(&config_path).ok();
+                let env_proxy = get_env_proxy();
+                let proxy = config.as_ref().and_then(|c| c.proxy.clone()).or(env_proxy);
+                (proxy, config.map(|c| c.port))
+            };
+
         if let Some(pid) = get_stored_pid() {
             if let Some((name, memory, cpu)) = get_process_info(pid) {
-                if let Ok(config) = ServerConfig::from_file(&config_path) {
-                    let proxy = config.proxy.as_deref().unwrap_or("None");
-                    print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
-                } else {
-                    print_process_table(pid, &name, memory, cpu, None, None);
-                }
+                print_process_table(pid, &name, memory, cpu, port, proxy.as_deref());
             } else {
-                print_process_table(pid, "unknown", 0.0, 0.0, None, None);
+                print_process_table(pid, "unknown", 0.0, 0.0, port, proxy.as_deref());
             }
         }
     } else {
@@ -415,4 +459,55 @@ pub fn cmd_status() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// List command implementation
+pub fn cmd_list() -> Result<()> {
+    println!("\n{}", "Bifrost - Provider List".bold().white().on_green());
+    println!();
+
+    if !is_server_running() {
+        print_warning("Server is not running");
+        println!(
+            "{} To start the server, run: {}",
+            "→".cyan(),
+            "bifrost start".bold()
+        );
+        println!();
+        return Ok(());
+    }
+
+    // Get status from server
+    match get_status_from_server(5564) {
+        Ok(Some(status)) => {
+            if status.providers.is_empty() {
+                print_warning("No providers configured");
+            } else {
+                print_providers_table(&status.providers);
+            }
+            println!();
+        }
+        Ok(None) => {
+            print_error("Failed to connect to server");
+            println!();
+        }
+        Err(e) => {
+            print_error(&format!("Failed to get status: {}", e));
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+/// Print providers in a table format
+fn print_providers_table(providers: &[ProviderInfo]) {
+    use tabled::settings::Style;
+
+    let mut sorted = providers.to_vec();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut table = Table::new(&sorted);
+    table.with(Style::sharp());
+    println!("{}", table);
 }

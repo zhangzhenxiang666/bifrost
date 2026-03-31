@@ -41,5 +41,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Stop => cli::commands::cmd_stop(),
         Commands::Restart => cli::commands::cmd_restart(),
         Commands::Status => cli::commands::cmd_status(),
+        Commands::List => cli::commands::cmd_list(),
     }
 }

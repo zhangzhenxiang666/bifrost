@@ -4,6 +4,7 @@
 //! Both OpenAIToQwenAdapter and AnthropicToQwenAdapter use this module.
 
 use crate::error::LlmMapError;
+use crate::state::get_global_state;
 use chrono::{DateTime, Utc};
 use dirs;
 use serde::{Deserialize, Serialize};
@@ -102,15 +103,19 @@ impl OAuthCredentialsManager {
             "f0304373b74a44d2b584a3fb70ca9e56"
         );
 
-        let response = reqwest::Client::new()
-            .post("https://chat.qwen.ai/api/v1/oauth2/token")
-            .header(
-                http::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
-            .header(http::header::ACCEPT, "application/json")
-            .body(urlencoded)
-            .send()
+        let response = get_global_state()
+            .registry
+            .http_client()
+            .send_request_fn(|client| {
+                client
+                    .post("https://chat.qwen.ai/api/v1/oauth2/token")
+                    .header(
+                        http::header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .header(http::header::ACCEPT, "application/json")
+                    .body(urlencoded.clone())
+            })
             .await
             .map_err(|e| LlmMapError::Validation(format!("Failed to refresh token: {}", e)))?;
 
