@@ -69,6 +69,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
+          # Extract version from tag (remove 'v' prefix if present)
+          VERSION="${GITHUB_REF#refs/tags/}"
           cp target/${{ matrix.target }}/release/bifrost release/bifrost-${{ matrix.suffix }}
           cp target/${{ matrix.target }}/release/bifrost-server release/bifrost-server-${{ matrix.suffix }}
 
@@ -76,7 +78,8 @@ jobs:
         shell: bash
         working-directory: release
         run: |
-          tar czf bifrost-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
+          VERSION="${GITHUB_REF#refs/tags/}"
+          tar czf bifrost-${VERSION}-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
