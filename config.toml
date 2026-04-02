@@ -18,6 +18,16 @@ base_url = "https://api.openai.com/v1"  # 服务提供商的 API 地址
 api_key = "sk-your-key"  # API 密钥
 endpoint = "openai"  # 端点类型，支持 "openai" 或 "anthropic"
 adapter = "passthrough"  # 适配器：passthrough | openai_to_qwen | anthropic_to_qwen | anthropic_to_openai
+# Provider 级别的额外请求头（会添加到所有请求）
+headers = [
+    { name = "X-Provider-Header", value = "provider-value" },
+    { name = "X-Custom-Config", value = "some-config" }
+]
+# Provider 级别的额外请求体字段（会合并到请求体中）
+body = [
+    { name = "extra_field", value = "extra_value" },
+    { name = "debug_mode", value = true }
+]
 
 [provider.qwen]
 base_url = "https://portal.qwen.ai/v1"
@@ -25,12 +35,41 @@ api_key = "your-qwen-key"
 endpoint = "openai"
 adapter = "openai-to-qwen"
 exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
+# Provider 级别的额外请求头
+headers = [
+    { name = "X-Qwen-Provider", value = "bifrost-gateway" }
+]
+# Provider 级别的额外请求体字段
+body = [
+    { name = "provider_extra", value = "test" }
+]
+# 模型特定配置
+[[provider.qwen.models]]
+name = "qwen-coder"  # 模型名称
+# 该模型的额外请求头（优先级高于 Provider 级别）
+headers = [
+    { name = "X-Model-Header", value = "coder-model" }
+]
+# 该模型的额外请求体字段（会与 Provider 级别合并）
+body = [
+    { name = "model_extra", value = "coder-extra" }
+]
+
+[[provider.qwen.models]]
+name = "qwen-chat"  # 另一个模型配置
+headers = [
+    { name = "X-Model-Header", value = "chat-model" }
+]
 
 [provider.anthropic-qwen]
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key = "your-key"
 endpoint = "anthropic"
 adapter = "anthropic-to-qwen"
+# Provider 级别的额外请求头
+headers = [
+    { name = "X-Anthro-Provider", value = "anthro-to-qwen" }
+]
 
 [provider.multi-adapter]
 base_url = "https://api.example.com/v1"

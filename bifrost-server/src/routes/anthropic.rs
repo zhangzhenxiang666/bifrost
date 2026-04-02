@@ -8,7 +8,7 @@ use serde_json::Value;
 
 /// Anthropic-compatible messages endpoint.
 #[axum::debug_handler]
-pub async fn messages(
+pub async fn messages_v1(
     State(state): State<AppState>,
     uri: http::Uri,
     headers: http::header::HeaderMap,
@@ -20,6 +20,28 @@ pub async fn messages(
         .unwrap_or(false);
 
     handler::handle_llm_request(&state, headers, body, uri, is_stream).await
+}
+
+#[axum::debug_handler]
+pub async fn messages(
+    state: State<AppState>,
+    uri: http::Uri,
+    headers: http::header::HeaderMap,
+    body: Json<Value>,
+) -> Result<axum::response::Response> {
+    let new_uri = if let Some(pq) = uri.path_and_query() {
+        let path = pq.path();
+        let new_path = path.replacen("/anthropic", "/anthropic/v1", 1);
+        let new_pq_str = match pq.query() {
+            Some(query) => format!("{}?{}", new_path, query),
+            None => new_path.to_string(),
+        };
+        new_pq_str.parse().unwrap_or(uri)
+    } else {
+        uri
+    };
+
+    messages_v1(state, new_uri, headers, body).await
 }
 
 #[cfg(test)]
@@ -85,7 +107,7 @@ mod tests {
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route("/anthropic/v1/messages", axum::routing::post(messages))
+            .route("/anthropic/v1/messages", axum::routing::post(messages_v1))
             .with_state(state);
 
         let request = Request::builder()
@@ -129,7 +151,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
         let state = create_test_state(&mock_server.uri());
         let app = axum::Router::new()
-            .route("/anthropic/v1/messages", axum::routing::post(messages))
+            .route("/anthropic/v1/messages", axum::routing::post(messages_v1))
             .with_state(state);
 
         let request = Request::builder()
@@ -155,7 +177,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     async fn test_messages_missing_model() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route("/v1/messages", axum::routing::post(messages))
+            .route("/v1/messages", axum::routing::post(messages_v1))
             .with_state(state);
 
         let request = Request::builder()
@@ -179,7 +201,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     async fn test_messages_invalid_model_format() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route("/v1/messages", axum::routing::post(messages))
+            .route("/v1/messages", axum::routing::post(messages_v1))
             .with_state(state);
 
         let request = Request::builder()
@@ -204,7 +226,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     async fn test_messages_provider_not_found() {
         let state = create_test_state("http://dummy-server");
         let app = axum::Router::new()
-            .route("/v1/messages", axum::routing::post(messages))
+            .route("/v1/messages", axum::routing::post(messages_v1))
             .with_state(state);
 
         let request = Request::builder()

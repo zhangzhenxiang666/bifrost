@@ -15,7 +15,10 @@ pub mod util;
 
 use crate::middleware::request_logger;
 use crate::provider::registry::ProviderRegistry;
-use crate::routes::{anthropic::messages, openai::chat_completions, status::status};
+use crate::routes::{
+    anthropic::messages, anthropic::messages_v1, openai::chat_completions,
+    openai::chat_completions_v1, status::status,
+};
 use crate::state::{AppState, get_global_state, set_global_state};
 
 use axum::Router;
@@ -56,7 +59,12 @@ async fn server(config: config::Config) -> anyhow::Result<()> {
             "/openai/chat/completions",
             axum::routing::post(chat_completions),
         )
-        .route("/anthropic/v1/messages", axum::routing::post(messages))
+        .route(
+            "/openai/v1/chat/completions",
+            axum::routing::post(chat_completions_v1),
+        )
+        .route("/anthropic/messages", axum::routing::post(messages))
+        .route("/anthropic/v1/messages", axum::routing::post(messages_v1))
         .layer(axum::middleware::from_fn(request_logger));
 
     let main_router = Router::new()

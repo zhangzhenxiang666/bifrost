@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/zhangzhenxiang666/bifrost/main/scri
 bifrost start
 ```
 
-### 配置 Provider
+### 示例配置 Provider
 
 编辑 `~/.bifrost/config.toml`:
 
@@ -43,23 +43,27 @@ port = 5564
 timeout_secs = 600
 max_retries = 5
 
-[provider.openai-example]
-base_url = "https://api.openai.com/v1"
-api_key = "sk-your-key"
-endpoint = "openai"
-adapter = "passthrough"
-
-[provider.qwen]
+[provider.qwen-code]
 base_url = "https://portal.qwen.ai/v1"
-api_key = "your-qwen-key"
+api_key = "any-key"
 endpoint = "openai"
 adapter = "openai-to-qwen"
 
-[provider.anthropic]
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+[provider.openai]
+base_url = "https://openai.com/v1"
 api_key = "your-key"
+endpoint = "openai"
+
+[provider.an-qwen]
+base_url = "https://portal.qwen.ai/v1"
+api_key = "any-key"
 endpoint = "anthropic"
 adapter = "anthropic-to-qwen"
+
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key = "your-key"
+endpoint = "anthropic"
 ```
 
 ### 使用

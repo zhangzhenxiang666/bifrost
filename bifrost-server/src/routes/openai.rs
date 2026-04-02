@@ -22,6 +22,27 @@ pub async fn chat_completions(
     handler::handle_llm_request(&state, headers, body, uri, is_stream).await
 }
 
+#[axum::debug_handler]
+pub async fn chat_completions_v1(
+    state: State<AppState>,
+    uri: http::Uri,
+    headers: http::header::HeaderMap,
+    body: Json<Value>,
+) -> Result<axum::response::Response> {
+    let new_uri = if let Some(pq) = uri.path_and_query() {
+        let path = pq.path();
+        let new_path = path.replacen("/openai/v1", "/openai", 1);
+        let new_pq_str = match pq.query() {
+            Some(query) => format!("{}?{}", new_path, query),
+            None => new_path.to_string(),
+        };
+        new_pq_str.parse().unwrap_or_else(|_| uri.clone())
+    } else {
+        uri
+    };
+    chat_completions(state, new_uri, headers, body).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
