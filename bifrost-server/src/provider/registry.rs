@@ -213,6 +213,7 @@ mod tests {
                 body: None,
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
 
@@ -236,6 +237,7 @@ mod tests {
                 body: None,
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
 
@@ -357,6 +359,7 @@ mod tests {
                 body: None,
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
 
@@ -416,6 +419,7 @@ mod tests {
                 }]),
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
 

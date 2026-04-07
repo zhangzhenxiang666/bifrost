@@ -35,6 +35,7 @@ api_key = "your-qwen-key"
 endpoint = "openai"
 adapter = "openai-to-qwen"
 exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
+extend = true  # 是否继承原始请求的 headers（默认 false，不继承）
 # Provider 级别的额外请求头
 headers = [
     { name = "X-Qwen-Provider", value = "bifrost-gateway" }

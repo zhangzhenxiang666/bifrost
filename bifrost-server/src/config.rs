@@ -214,6 +214,10 @@ pub struct ProviderConfig {
     /// Optional list of headers to exclude from original request (not adapter headers)
     #[serde(default)]
     pub exclude_headers: Option<Vec<String>>,
+    /// Whether to inherit and remove hardcoded excluded headers (authorization, etc.)
+    /// When false (default), only removes headers explicitly listed in exclude_headers
+    #[serde(default)]
+    pub extend: bool,
 }
 
 /// Server configuration
@@ -603,6 +607,7 @@ mod tests {
             body: None,
             models: None,
             exclude_headers: None,
+            extend: false,
         }
     }
 

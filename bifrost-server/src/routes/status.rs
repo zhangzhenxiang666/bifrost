@@ -64,6 +64,7 @@ mod tests {
                 body: None,
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
         provider.insert(
@@ -77,6 +78,7 @@ mod tests {
                 body: None,
                 models: None,
                 exclude_headers: None,
+                extend: false,
             },
         );
         Config {
