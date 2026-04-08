@@ -1,6 +1,7 @@
 //! Generic route handler utilities for LLM endpoints
 
 use crate::adapter::OnionExecutor;
+use crate::config::Endpoint;
 use crate::error::{LlmMapError, Result};
 use crate::model::RequestTransform;
 use crate::state::AppState;
@@ -42,12 +43,51 @@ pub async fn execute_provider_request(
         .map(|s| s.to_string())
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
-    let (provider_id, model_name) = util::parse_model(&model_value)?;
+    // If model is not in provider@model format, try to resolve via endpoint mapping
+    let model_value = if model_value.contains('@') {
+        model_value.as_str()
+    } else {
+        let route_endpoint = if uri.path().starts_with("/anthropic") {
+            Endpoint::Anthropic
+        } else {
+            Endpoint::OpenAI
+        };
+        match state
+            .registry
+            .get_endpoint_config(&route_endpoint)
+            .and_then(|cfg| cfg.mapping.get(&model_value))
+        {
+            Some(mapped) => mapped,
+            None => {
+                return Err(LlmMapError::Validation(format!(
+                    "Model '{}' not found in endpoint '{}' mapping",
+                    model_value, route_endpoint
+                )));
+            }
+        }
+    };
+
+    let (provider_id, model_name) = util::parse_model(model_value)?;
 
     let provider = state
         .registry
         .get(provider_id)
         .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
+
+    // Validate provider endpoint matches the route
+    let route_is_anthropic = uri.path().starts_with("/anthropic");
+    let provider_is_anthropic = provider.endpoint.is_anthropic();
+    if route_is_anthropic != provider_is_anthropic {
+        let (expected, actual) = if route_is_anthropic {
+            ("anthropic", "openai")
+        } else {
+            ("openai", "anthropic")
+        };
+        return Err(LlmMapError::Validation(format!(
+            "Provider '{}' endpoint mismatch: expected '{}', got '{}'",
+            provider_id, expected, actual
+        )));
+    }
 
     let url = util::join_url_paths(
         &provider.base_url,
@@ -56,7 +96,7 @@ pub async fn execute_provider_request(
     );
 
     // Update model field to use model_name only (without provider prefix)
-    // Safety: We just verified model exists at line 107-111
+    // Safety: We just verified model exists
     *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
 
     let mut final_headers = HeaderMap::new();
@@ -151,13 +191,13 @@ pub async fn process_stream_request(
         .map_err(LlmMapError::Http)?;
 
     let status_code = response.status();
-    let upstream_headers = response.headers().clone();
+    let mut upstream_headers = response.headers().clone();
 
-    // Check if status code indicates an error (e.g., 429 Too Many Requests)
-    // If so, return error response instead of streaming
+    // Strip headers that conflict with axum's auto-generated response headers
+    util::remove_excluded_headers(&mut upstream_headers, None);
+
     if !status_code.is_success() {
         let body = response.bytes().await.map_err(LlmMapError::Http)?;
-
         return Ok((status_code, upstream_headers, body).into_response());
     }
 
@@ -255,6 +295,10 @@ pub async fn process_json_request(
         .map_err(LlmMapError::Http)?;
     let mut upstream_headers = response.headers().clone();
     let status_code = response.status();
+
+    // Clone upstream headers, then strip problematic ones before sending to
+    // the client (body will be re-serialized, and auth/proxy headers leak).
+    util::remove_excluded_headers(&mut upstream_headers, None);
 
     if !status_code.is_success() {
         let body = response.bytes().await.map_err(LlmMapError::Http)?;
