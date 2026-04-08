@@ -98,23 +98,59 @@ http://localhost:5564/anthropic
 
 ### Server 配置
 
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `port` | u16 | 5564 | 服务监听端口 |
+| `timeout_secs` | u64 | 600 | HTTP 请求超时时间（秒） |
+| `max_retries` | u32 | 5 | HTTP 请求失败最大重试次数 |
+| `retry_backoff_base_ms` | u64 | 100 | 指数回避基础延迟（毫秒） |
+| `proxy` | String | - | HTTP 代理地址（可选） |
+
+### Provider 配置 `[provider.<name>]`
+
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `base_url` | String | - | 服务提供商的 API 地址 |
+| `api_key` | String | - | API 密钥 |
+| `endpoint` | String | openai | 端点类型：`openai` 或 `anthropic` |
+| `adapter` | String/Array | passthrough | 适配器类型，可指定单个或多个（按顺序执行） |
+| `headers` | Array | - | Provider 级别的额外请求头，会添加到所有请求 |
+| `body` | Array | - | Provider 级别的额外请求体字段，会合并到请求体中 |
+| `exclude_headers` | Array | - | 排除的请求头（仅影响原始请求 headers） |
+| `extend` | bool | false | 是否继承原始请求的 headers |
+| `models` | Array | - | 模型特定配置，详见下表 |
+
+#### Provider.models 子配置 `[[provider.<name>.models]]`
+
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `name` | String | - | 模型名称 |
+| `headers` | Array | - | 该模型的额外请求头（优先级高于 Provider 级别） |
+| `body` | Array | - | 该模型的额外请求体字段（会与 Provider 级别合并） |
+
+#### Header/Body 字段格式
+
 ```toml
-[server]
-port = 5564              # 服务端口
-timeout_secs = 600       # 请求超时时间（秒）
-max_retries = 5          # 最大重试次数
-proxy = "http://proxy:8080"  # HTTP 代理（可选）
+{ name = "X-Header-Name", value = "header-value" }
+{ name = "body_field", value = "field-value" }
 ```
 
-### Provider 配置
+### Endpoint 配置 `[endpoint.<name>]`
+
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `mapping` | Table | - | 简短模型名称到 `provider@model` 格式的映射 |
 
 ```toml
-[provider.<name>]
-base_url = "https://api.example.com/v1"  # 提供商 API 地址
-api_key = "your-api-key"                 # API 密钥
-endpoint = "openai" | "anthropic"        # 端点类型
-# adapter = "openai-to-qwen" | "anthropic-to-qwen" | "anthropic-to-openai"  # 可选，默认透传
+# 格式: { "客户端传入的模型名" = "provider@实际模型名" }
+[endpoint.openai]
+mapping = { "sonnet" = "openai-provider@gpt-4o" }
+
+[endpoint.anthropic]
+mapping = { "sonnet" = "anthropic-provider@claude-sonnet" }
 ```
+
+**优先级**：`provider@model` 格式 > endpoint mapping > 报错
 
 ### 适配器类型
 
@@ -125,11 +161,29 @@ endpoint = "openai" | "anthropic"        # 端点类型
 | `anthropic-to-qwen` | 将 Anthropic 格式转换为本地 Qwen CLI 格式 |
 | `anthropic-to-openai` | 将 Anthropic 格式转换为 OpenAI 格式 |
 
+### 完整配置示例
+
+```toml
+[server]
+port = 5564
+timeout_secs = 600
+max_retries = 5
+
+[provider.qwen-code]
+base_url = "https://portal.qwen.ai/v1"
+api_key = "any-key"
+endpoint = "openai"
+adapter = "openai-to-qwen"
+
+[endpoint.openai]
+mapping = { "sonnet" = "qwen-code@gpt-4o" }
+```
+
 ## 架构
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                      Your Application                        │
+│                      Your Application                       │
 │                    (Claude Code, etc.)                      │
 └─────────────────────────────┬───────────────────────────────┘
                               │
@@ -139,10 +193,10 @@ endpoint = "openai" | "anthropic"        # 端点类型
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐  │
 │  │ /openai/... │    │/anthropic/..│    │  Adapter Chain  │  │
 │  └──────┬──────┘    └──────┬──────┘    └────────┬────────┘  │
-│         │                  │                    │            │
-│         └──────────────────┴────────────────────┘          │
-│                          │                                   │
-└──────────────────────────┼───────────────────────────────────┘
+│         │                  │                    │           │
+│         └──────────────────┴────────────────────┘           │
+│                          │                                  │
+└──────────────────────────┼──────────────────────────────────┘
                            │
               ┌────────────┴────────────┐
               ▼                         ▼

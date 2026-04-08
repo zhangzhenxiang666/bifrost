@@ -76,6 +76,7 @@ mod tests {
         Config {
             provider,
             server: crate::config::ServerConfig::default(),
+            endpoint: Default::default(),
         }
     }
 

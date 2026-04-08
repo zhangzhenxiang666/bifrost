@@ -7,7 +7,7 @@ use crate::adapter::builtin::{
     AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter,
 };
 use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
-use crate::config::{Config, ProviderConfig};
+use crate::config::{Config, Endpoint, EndpointConfig, ProviderConfig};
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
 use std::collections::HashMap;
@@ -22,6 +22,7 @@ use std::collections::HashMap;
 pub struct ProviderRegistry {
     providers: HashMap<String, ProviderConfig>,
     http_client: HttpClient,
+    endpoint_mapping: HashMap<Endpoint, EndpointConfig>,
 }
 
 impl ProviderRegistry {
@@ -65,9 +66,24 @@ impl ProviderRegistry {
         let http_client =
             HttpClient::with_retry(timeout_secs, config.server.proxy.as_deref(), retry_config);
 
+        // Build endpoint mapping from config (convert String keys to Endpoint enum)
+        let endpoint_mapping: HashMap<Endpoint, EndpointConfig> = config
+            .endpoint
+            .iter()
+            .map(|(k, v)| {
+                let endpoint = if k == "anthropic" {
+                    Endpoint::Anthropic
+                } else {
+                    Endpoint::OpenAI
+                };
+                (endpoint, v.clone())
+            })
+            .collect();
+
         Self {
             providers,
             http_client,
+            endpoint_mapping,
         }
     }
 
@@ -191,6 +207,11 @@ impl ProviderRegistry {
     pub fn providers(&self) -> &HashMap<String, ProviderConfig> {
         &self.providers
     }
+
+    /// Get endpoint configuration by endpoint type.
+    pub fn get_endpoint_config(&self, endpoint: &Endpoint) -> Option<&EndpointConfig> {
+        self.endpoint_mapping.get(endpoint)
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +241,7 @@ mod tests {
         Config {
             provider,
             server: crate::config::ServerConfig::default(),
+            endpoint: Default::default(),
         }
     }
 
@@ -244,6 +266,7 @@ mod tests {
         Config {
             provider,
             server: crate::config::ServerConfig::default(),
+            endpoint: Default::default(),
         }
     }
 
@@ -366,6 +389,7 @@ mod tests {
         let config = Config {
             provider,
             server: crate::config::ServerConfig::default(),
+            endpoint: Default::default(),
         };
 
         let registry = ProviderRegistry::from_config(&config);
@@ -426,6 +450,7 @@ mod tests {
         let config = Config {
             provider,
             server: crate::config::ServerConfig::default(),
+            endpoint: Default::default(),
         };
 
         let registry = ProviderRegistry::from_config(&config);

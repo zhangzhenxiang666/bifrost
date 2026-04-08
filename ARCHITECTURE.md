@@ -46,7 +46,9 @@ async fn transform_stream_chunk(chunk, event, provider_config) -> StreamChunkTra
 | 路由 | 端点 |
 |------|------|
 | `POST /openai/chat/completions` | OpenAI 兼容 |
+| `POST /openai/v1/chat/completions`| OpenAI 兼容 |
 | `POST /anthropic/v1/messages` | Anthropic 兼容 |
+| `POST /anthropic/messages` | Anthropic 兼容 |
 
 ---
 

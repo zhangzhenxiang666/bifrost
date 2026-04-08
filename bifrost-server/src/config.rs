@@ -142,7 +142,7 @@ pub struct BodyEntry {
 // =============================================================================
 
 /// Provider endpoint type for API compatibility
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum Endpoint {
@@ -172,6 +172,14 @@ impl Endpoint {
     pub fn is_anthropic(&self) -> bool {
         matches!(self, Endpoint::Anthropic)
     }
+}
+
+/// Endpoint-level configuration for model name mapping
+#[derive(Debug, Clone, Deserialize)]
+pub struct EndpointConfig {
+    /// Model name to provider@model mapping
+    #[serde(default)]
+    pub mapping: std::collections::HashMap<String, String>,
 }
 
 // Default to OpenAI for backward compatibility
@@ -254,6 +262,10 @@ pub struct Config {
     /// Loaded from [server] section
     #[serde(default)]
     pub server: ServerConfig,
+    /// Endpoint-level configurations (e.g., model name mappings)
+    /// Loaded from [endpoint.openai] and [endpoint.anthropic] sections
+    #[serde(default)]
+    pub endpoint: std::collections::HashMap<String, EndpointConfig>,
 }
 
 // Default server configuration
@@ -633,6 +645,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -666,6 +679,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -691,6 +705,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -721,6 +736,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -745,6 +761,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -775,6 +792,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
@@ -803,6 +821,7 @@ mod tests {
                 max_retries: None,
                 retry_backoff_base_ms: None,
             },
+            endpoint: Default::default(),
         };
 
         let result = config.validate();
