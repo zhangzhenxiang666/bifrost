@@ -1,22 +1,116 @@
 //! CLI command implementations
 
-use super::config::{
+use crate::config::{
     BIFROST_DIR, cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path,
     get_today_log_path, init_bifrost_dir,
 };
-use super::{
-    print_error, print_header, print_info, print_kv_table, print_process_table, print_success,
-    print_warning,
-};
 use anyhow::{Context, Result};
+use clap::Subcommand;
 use colored::Colorize;
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use std::fs;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
 use sysinfo::{Pid, System};
-use tabled::{Table, Tabled};
+use tabled::{
+    Table, Tabled,
+    settings::{
+        Alignment, Remove, Style,
+        object::{Columns, Rows},
+    },
+};
+use tar::Archive;
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Start the LLM Map server as a daemon
+    #[command(arg_required_else_help = false)]
+    Start,
+
+    /// Stop the LLM Map server
+    #[command(arg_required_else_help = false)]
+    Stop,
+
+    /// Restart the LLM Map server
+    #[command(arg_required_else_help = false)]
+    Restart,
+
+    /// Show the current status of the LLM Map server
+    #[command(arg_required_else_help = false)]
+    Status,
+
+    /// List all providers from the running server
+    #[command(arg_required_else_help = false)]
+    List,
+
+    /// Upgrade bifrost and bifrost-server to the latest version
+    #[command(arg_required_else_help = false)]
+    Upgrade,
+}
+
+/// Print a formatted info message with colored label
+pub fn print_info(label: &str, value: &str) {
+    println!("{:<18} {}", label.bold().cyan(), value);
+}
+
+/// Print a formatted success message with green checkmark
+pub fn print_success(message: &str) {
+    println!("{} {}", "✓".green().bold(), message.green());
+}
+
+/// Print a formatted error message with red X
+pub fn print_error(message: &str) {
+    eprintln!("{} {}", "✗".red().bold(), message.red());
+}
+
+/// Print a formatted warning message with yellow triangle
+pub fn print_warning(message: &str) {
+    println!("{} {}", "⚠".yellow().bold(), message.yellow());
+}
+
+/// Print a section header with purple background
+pub fn print_header(title: &str) {
+    println!("\n{}", title.bold().white().on_purple());
+}
+
+/// Print a 2-column table for key-value pairs
+pub fn print_kv_table(rows: &[(&str, String)]) {
+    let mut table = Table::new(rows);
+    table
+        .with(Style::modern())
+        .modify(Columns::first(), Alignment::left())
+        .modify(Columns::last(), Alignment::left());
+    table.with(Remove::row(Rows::new(0..1)));
+    println!("{}", table);
+}
+
+/// Print process info table
+pub fn print_process_table(
+    pid: u32,
+    name: &str,
+    memory: f32,
+    cpu: f32,
+    port: Option<u16>,
+    proxy: Option<&str>,
+) {
+    let mut rows = vec![
+        ("PID", pid.to_string()),
+        ("Process", name.to_string()),
+        ("Memory", format!("{:.2} MB", memory)),
+        ("CPU", format!("{:.1}%", cpu)),
+    ];
+    if let Some(port) = port {
+        rows.push(("Port", port.to_string()));
+    }
+    if let Some(proxy) = proxy {
+        rows.push(("Proxy", proxy.to_string()));
+    } else {
+        rows.push(("Proxy", "None".to_string()));
+    }
+    print_kv_table(&rows);
+}
 
 /// Status response from /status endpoint
 #[derive(Debug, Deserialize)]
@@ -88,13 +182,10 @@ pub fn is_port_in_use(port: u16) -> bool {
 /// Get process information for a given PID
 pub fn get_process_info(pid: u32) -> Option<(String, f32, f32)> {
     let mut system = System::new();
-    // First refresh to establish baseline
     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
-    // Wait a short period to allow CPU time to accumulate
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    // Second refresh to calculate CPU usage delta
     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     if let Some(process) = system.process(Pid::from_u32(pid)) {
@@ -115,7 +206,6 @@ struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// Load configuration from TOML file
     fn from_file(path: &PathBuf) -> Result<Self> {
         let content = fs::read_to_string(path)?;
         let config: toml::Value = toml::from_str(&content)?;
@@ -153,17 +243,14 @@ pub fn cmd_start() -> Result<()> {
 }
 
 /// Internal start logic (used by restart)
-fn cmd_start_internal() -> Result<()> {
-    // Initialize directory structure
+pub fn cmd_start_internal() -> Result<()> {
     init_bifrost_dir()?;
 
-    // Clean up old logs
     let deleted = cleanup_old_logs()?;
     if deleted > 0 {
         print_info("Cleaned up", &format!("{} old log file(s)", deleted));
     }
 
-    // Check if server is already running
     if is_server_running() {
         print_warning("Server is already running");
         println!();
@@ -193,7 +280,6 @@ fn cmd_start_internal() -> Result<()> {
         return Ok(());
     }
 
-    // Load configuration
     let config_path = get_config_path()?;
     let config = if config_path.exists() && fs::metadata(&config_path)?.len() > 0 {
         ServerConfig::from_file(&config_path)?
@@ -207,13 +293,11 @@ port = 5564
 
     let port = config.port;
 
-    // Check if port is already in use
     if is_port_in_use(port) {
         print_error(&format!("Port {} is already in use", port));
         return Err(anyhow::anyhow!("Port {} is already in use", port));
     }
 
-    // Get paths
     let pid_file = get_pid_file_path()?;
     let log_file = get_today_log_path()?;
     let stdout_path = get_logs_dir()?.join("bifrost.out");
@@ -221,11 +305,9 @@ port = 5564
 
     print_header("Starting Bifrost Server");
 
-    // Determine actual proxy (config takes precedence over environment)
     let env_proxy = get_env_proxy();
     let proxy = config.proxy.clone().or(env_proxy);
 
-    // Display configuration as table
     let config_rows = vec![
         ("Port", port.to_string()),
         ("Config", config_path.display().to_string()),
@@ -237,7 +319,6 @@ port = 5564
     println!("  {} Output log: {}", "→".cyan(), stdout_path.display());
     println!("  {} Error log: {}", "→".cyan(), stderr_path.display());
 
-    // Find server binary
     let server_binary = get_server_binary_path();
     println!(
         "  {} Server binary: {}",
@@ -246,7 +327,6 @@ port = 5564
     );
     println!();
 
-    // Open files for stdout and stderr
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -256,7 +336,6 @@ port = 5564
         .append(true)
         .open(&stderr_path)?;
 
-    // Start the server as a child process
     let child = Command::new(&server_binary)
         .stdout(stdout_file)
         .stderr(stderr_file)
@@ -268,13 +347,10 @@ port = 5564
 
     let server_pid = child.id();
 
-    // Write PID to file
     fs::write(&pid_file, server_pid.to_string())?;
 
-    // Give the server a moment to start
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Check if the process is still running
     if !is_process_running(server_pid) {
         print_error("Server failed to start");
         return Err(anyhow::anyhow!("Server process terminated immediately"));
@@ -373,7 +449,6 @@ pub fn cmd_stop() -> Result<()> {
 pub fn cmd_restart() -> Result<()> {
     println!("\n{}", "Bifrost - Restart Server".bold().white().on_cyan());
     if is_server_running() {
-        // Stop server silently without detailed output
         if let Some(pid) = get_stored_pid() {
             let mut system = System::new();
             system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
@@ -406,7 +481,6 @@ pub fn cmd_restart() -> Result<()> {
         println!("\n{}", "⚠ Server was not running".bold().yellow());
     }
 
-    // Start server without header (reuse start logic but skip the banner)
     cmd_start_internal()?;
 
     Ok(())
@@ -423,12 +497,10 @@ pub fn cmd_status() -> Result<()> {
         );
         println!();
 
-        // Try to get actual status from server
         let (proxy, port): (Option<String>, Option<u16>) =
             if let Some(status) = get_status_from_server(5564).ok().flatten() {
                 (status.proxy, Some(5564))
             } else {
-                // Fallback to config + environment
                 let config = ServerConfig::from_file(&config_path).ok();
                 let env_proxy = get_env_proxy();
                 let proxy = config.as_ref().and_then(|c| c.proxy.clone()).or(env_proxy);
@@ -477,7 +549,6 @@ pub fn cmd_list() -> Result<()> {
         return Ok(());
     }
 
-    // Get status from server
     match get_status_from_server(5564) {
         Ok(Some(status)) => {
             if status.providers.is_empty() {
@@ -510,4 +581,206 @@ fn print_providers_table(providers: &[ProviderInfo]) {
     let mut table = Table::new(&sorted);
     table.with(Style::sharp());
     println!("{}", table);
+}
+
+/// Platform descriptor for binary asset naming
+struct Platform {
+    suffix: String,
+}
+
+impl Platform {
+    fn detect() -> Self {
+        let os = std::process::Command::new("uname")
+            .arg("-s")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "Linux".to_string());
+
+        let arch = std::process::Command::new("uname")
+            .arg("-m")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "x86_64".to_string());
+
+        let suffix = match (os.as_str(), arch.as_str()) {
+            ("Linux", "x86_64") => "linux-amd64",
+            ("Linux", "aarch64") | ("Linux", "arm64") => "linux-aarch64",
+            ("Darwin", "x86_64") => "darwin-amd64",
+            ("Darwin", "arm64") => "darwin-aarch64",
+            _ => "linux-amd64",
+        };
+
+        Platform {
+            suffix: suffix.to_string(),
+        }
+    }
+}
+
+const GITHUB_REPO: &str = "zhangzhenxiang666/bifrost";
+
+/// Fetch the latest release tag from GitHub API
+fn fetch_remote_version() -> Result<String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "bifrost-upgrade/1.0")
+        .send()?;
+    let json: serde_json::Value = resp.json()?;
+    let tag = json["tag_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("failed to parse tag_name"))?;
+    Ok(tag.to_string())
+}
+
+/// Get the current local version by running `bifrost -V`
+fn get_local_version() -> Result<semver::Version> {
+    let binary_path = get_server_binary_path().with_file_name("bifrost");
+    let output = std::process::Command::new(&binary_path)
+        .arg("-V")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version_str = stdout.trim().trim_start_matches("bifrost ");
+    semver::Version::parse(version_str)
+        .map_err(|_| anyhow::anyhow!("failed to parse version from: {}", version_str))
+}
+
+fn download_and_extract(github_tag: &str, platform: &Platform) -> Result<std::path::PathBuf> {
+    let asset_name = format!("bifrost-{}-{}.tar.gz", github_tag, platform.suffix);
+    let download_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        GITHUB_REPO, github_tag, asset_name
+    );
+
+    println!("Downloading: {}", asset_name);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let mut resp = client.get(&download_url).send()?;
+    resp.error_for_status_ref()?;
+
+    let temp_dir = std::env::temp_dir().join(format!("bifrost-upgrade-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let archive_path = temp_dir.join(&asset_name);
+    let mut file = std::fs::File::create(&archive_path)?;
+    std::io::copy(&mut resp, &mut file)?;
+
+    println!("Extracting...");
+    let tar_gz = std::fs::File::open(&archive_path)?;
+    let decoder = GzDecoder::new(tar_gz);
+    let mut archive = Archive::new(decoder);
+    archive.unpack(&temp_dir)?;
+
+    Ok(temp_dir)
+}
+
+fn install_binaries(temp_dir: &std::path::Path, platform: &Platform) -> Result<()> {
+    let server_binary_path = get_server_binary_path();
+    let install_dir = server_binary_path.parent().unwrap();
+    std::fs::create_dir_all(install_dir)?;
+
+    let bifrost_src = temp_dir.join(format!("bifrost-{}", platform.suffix));
+    let server_src = temp_dir.join(format!("bifrost-server-{}", platform.suffix));
+    let bifrost_dst = install_dir.join("bifrost");
+    let server_dst = install_dir.join("bifrost-server");
+
+    std::fs::rename(&bifrost_src, &bifrost_dst).or_else(|_| {
+        std::fs::copy(&bifrost_src, &bifrost_dst).and_then(|_| std::fs::remove_file(&bifrost_src))
+    })?;
+    std::fs::rename(&server_src, &server_dst).or_else(|_| {
+        std::fs::copy(&server_src, &server_dst).and_then(|_| std::fs::remove_file(&server_src))
+    })?;
+
+    std::fs::remove_dir_all(temp_dir).ok();
+
+    println!("Installing binaries... Done");
+
+    Ok(())
+}
+
+/// Upgrade command implementation
+pub fn cmd_upgrade() -> Result<()> {
+    println!();
+
+    let platform = Platform::detect();
+
+    let remote_tag = fetch_remote_version()?;
+    let remote_tag_stripped = remote_tag.trim_start_matches('v');
+    let remote = semver::Version::parse(remote_tag_stripped)
+        .map_err(|_| anyhow::anyhow!("failed to parse remote version: {}", remote_tag_stripped))?;
+
+    let local = match get_local_version() {
+        Ok(v) => v,
+        Err(e) => {
+            print_warning(&format!(
+                "Failed to get local version: {}. Proceeding with upgrade anyway.",
+                e
+            ));
+            semver::Version::new(0, 0, 0)
+        }
+    };
+
+    if local >= remote {
+        println!("✓ Already up to date (v{})", local);
+        println!();
+        return Ok(());
+    }
+
+    println!("Checking version: v{} < v{} (remote)", local, remote);
+
+    let temp_dir = download_and_extract(&remote_tag, &platform)?;
+
+    let server_was_running = is_server_running();
+
+    if server_was_running {
+        print_info("Stopping service...", "");
+        if let Some(pid) = get_stored_pid() {
+            let mut system = System::new();
+            system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            if let Some(process) = system.process(Pid::from_u32(pid)) {
+                process.kill();
+            }
+            let mut attempts = 0;
+            while is_process_running(pid) && attempts < 10 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                attempts += 1;
+            }
+            if is_process_running(pid) {
+                Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output()
+                    .ok();
+            }
+            if let Ok(pid_file) = get_pid_file_path() {
+                fs::remove_file(&pid_file).ok();
+            }
+        }
+        println!("Done");
+    } else {
+        print_info("Stopping service...", "Not running, skipping");
+    }
+
+    if let Err(e) = install_binaries(&temp_dir, &platform) {
+        return Err(anyhow::anyhow!("Install failed: {}", e));
+    }
+
+    if server_was_running {
+        print_info("Restarting service...", "");
+        cmd_start_internal()?;
+        println!("Done");
+    }
+
+    println!("✓ Upgrade complete (v{} → v{})", local, remote);
+    println!();
+
+    Ok(())
 }

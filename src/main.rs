@@ -1,11 +1,12 @@
 //! Bifrost CLI - Service management for Bifrost server
 
-mod cli;
+mod commands;
+mod config;
 
 use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::{AnsiColor, Effects};
-use cli::Commands;
+use commands::Commands;
 
 fn styles() -> Styles {
     Styles::styled()
@@ -37,10 +38,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start => cli::commands::cmd_start(),
-        Commands::Stop => cli::commands::cmd_stop(),
-        Commands::Restart => cli::commands::cmd_restart(),
-        Commands::Status => cli::commands::cmd_status(),
-        Commands::List => cli::commands::cmd_list(),
+        Commands::Start => commands::cmd_start(),
+        Commands::Stop => commands::cmd_stop(),
+        Commands::Restart => commands::cmd_restart(),
+        Commands::Status => commands::cmd_status(),
+        Commands::List => commands::cmd_list(),
+        Commands::Upgrade => commands::cmd_upgrade(),
     }
 }
