@@ -93,6 +93,7 @@ http://localhost:5564/anthropic
 | `bifrost restart` | 重启服务器 |
 | `bifrost status` | 查看服务器运行状态 |
 | `bifrost list` | 列出所有配置的 Provider |
+| `bifrost upgrade` | 从 GitHub Releases 自动升级到最新版本 |
 
 ## 配置说明
 
