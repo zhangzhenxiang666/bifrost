@@ -14,8 +14,8 @@ pub mod builtin;
 pub mod chain;
 pub mod converter;
 
-use crate::config::ProviderConfig;
 use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::types::ProviderConfig;
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;

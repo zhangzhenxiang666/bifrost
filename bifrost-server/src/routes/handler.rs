@@ -1,10 +1,10 @@
 //! Generic route handler utilities for LLM endpoints
 
 use crate::adapter::OnionExecutor;
-use crate::config::Endpoint;
 use crate::error::{LlmMapError, Result};
 use crate::model::RequestTransform;
 use crate::state::AppState;
+use crate::types::{Endpoint, MappingEntry};
 use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
@@ -27,10 +27,13 @@ pub struct RequestContext {
 ///
 /// # Provider Configuration Handling
 ///
-/// This function processes provider configuration in the following order:
-/// 1. **Provider-level config**: Merges `provider.body` and `provider.headers` first
-/// 2. **Adapter transformation**: Executes adapter chain which may modify body/headers
-/// 3. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
+/// This function processes provider configuration in the following priority order (highest to lowest):
+/// 1. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
+/// 2. **Provider-level config**: Merges `provider.body` and `provider.headers`
+/// 3. **Endpoint mapping resolution**: If model not in provider@model format, resolve via endpoint mapping
+///    - Extract target string from MappingEntry (Simple or Complex)
+///    - If Complex mapping with headers/body, merge them into the request
+/// 4. **Adapter transformation**: Executes adapter chain which may modify body/headers
 pub async fn execute_provider_request(
     state: &AppState,
     mut headers: HeaderMap,
@@ -44,20 +47,28 @@ pub async fn execute_provider_request(
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
     // If model is not in provider@model format, try to resolve via endpoint mapping
-    let model_value = if model_value.contains('@') {
-        model_value.as_str()
+    let (model_target, mapping_extra_headers, mapping_extra_body) = if model_value.contains('@') {
+        // Direct provider@model format, no mapping needed
+        (model_value.as_str(), None, None)
     } else {
         let route_endpoint = if uri.path().starts_with("/anthropic") {
             Endpoint::Anthropic
         } else {
             Endpoint::OpenAI
         };
-        match state
+        let mapping_entry = state
             .registry
             .get_endpoint_config(&route_endpoint)
-            .and_then(|cfg| cfg.mapping.get(&model_value))
-        {
-            Some(mapped) => mapped,
+            .and_then(|cfg| cfg.mapping.get(&model_value));
+
+        match mapping_entry {
+            Some(MappingEntry::Simple(target)) => (target.as_str(), None, None),
+            Some(MappingEntry::Complex(config)) => {
+                // Extract extra headers and body from complex mapping
+                let extra_headers = config.headers.clone();
+                let extra_body = config.body.clone();
+                (config.target.as_str(), extra_headers, extra_body)
+            }
             None => {
                 return Err(LlmMapError::Validation(format!(
                     "Model '{}' not found in endpoint '{}' mapping",
@@ -67,7 +78,7 @@ pub async fn execute_provider_request(
         }
     };
 
-    let (provider_id, model_name) = util::parse_model(model_value)?;
+    let (provider_id, model_name) = util::parse_model(model_target)?;
 
     let provider = state
         .registry
@@ -119,6 +130,24 @@ pub async fn execute_provider_request(
 
     if let Some(hs) = transform_headers {
         util::extend_overwrite(&mut final_headers, hs);
+    }
+
+    // Merge endpoint mapping extra body fields first (before provider-level)
+    if let Some(extra_body) = mapping_extra_body {
+        for body_entry in extra_body {
+            body[&body_entry.name] = body_entry.value;
+        }
+    }
+
+    // Merge endpoint mapping extra headers (before provider-level headers)
+    if let Some(extra_headers) = mapping_extra_headers {
+        for header_entry in extra_headers {
+            if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
+                && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
+            {
+                final_headers.insert(header_name, header_value);
+            }
+        }
     }
 
     // Merge provider-configured body fields into the request body

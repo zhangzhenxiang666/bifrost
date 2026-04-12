@@ -79,7 +79,7 @@ impl Adapter for OpenAIToQwenAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProviderConfig;
+    use crate::types::ProviderConfig;
     use http::HeaderMap;
 
     /// Initialize OAuth credentials for tests
@@ -106,7 +106,7 @@ mod tests {
         ProviderConfig {
             base_url: "https://portal.qwen.ai/v1".to_string(),
             api_key: "any-key".to_string(),
-            endpoint: crate::config::Endpoint::OpenAI,
+            endpoint: crate::types::Endpoint::OpenAI,
             adapter: vec![],
             headers: None,
             body: None,

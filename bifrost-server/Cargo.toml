@@ -15,7 +15,6 @@ http.workspace = true
 urlencoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 async-trait.workspace = true
@@ -31,7 +30,7 @@ daemonize.workspace = true
 dirs.workspace = true
 whoami.workspace = true
 rand.workspace = true
-
+bifrost-config.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

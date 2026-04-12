@@ -1,18 +1,20 @@
 //! CLI command implementations
 
 use crate::config::{
-    BIFROST_DIR, cleanup_old_logs, get_config_path, get_logs_dir, get_pid_file_path,
-    get_today_log_path, init_bifrost_dir,
+    BIFROST_DIR, cleanup_old_logs, get_bifrost_dir, get_config_path, get_logs_dir,
+    get_pid_file_path, get_today_log_path, init_bifrost_dir,
 };
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
 use flate2::read::GzDecoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
 use tabled::{
     Table, Tabled,
@@ -22,6 +24,30 @@ use tabled::{
     },
 };
 use tar::Archive;
+
+/// Environment variable for startup socket path
+const STARTUP_SOCKET_ENV: &str = "BIFROST_STARTUP_SOCKET";
+
+/// Predefined adapter names
+const PREDEFINED_ADAPTERS: &[&str] = &[
+    "passthrough",
+    "openai_to_qwen",
+    "openai-to-qwen",
+    "anthropic_to_openai",
+    "anthropic-to-openai",
+    "anthropic_to_qwen",
+    "anthropic-to-qwen",
+];
+
+/// Server startup result sent via Unix Domain Socket
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "status")]
+enum ServerStartResult {
+    #[serde(rename = "success")]
+    Success { pid: u32 },
+    #[serde(rename = "failure")]
+    Failure { message: String },
+}
 
 #[derive(Subcommand)]
 pub enum Commands {
@@ -235,6 +261,80 @@ fn get_server_binary_path() -> PathBuf {
         .join("bifrost-server")
 }
 
+/// Create a Unix Domain Socket for startup communication
+fn create_startup_socket() -> Result<(std::os::unix::net::UnixListener, PathBuf)> {
+    let socket_path =
+        get_bifrost_dir()?.join(format!("bifrost_startup_{}.sock", std::process::id()));
+
+    // Remove existing socket file if any
+    let _ = std::fs::remove_file(&socket_path);
+
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path)
+        .context("Failed to create startup socket")?;
+
+    // Set non-blocking mode for timeout handling
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set non-blocking mode")?;
+
+    Ok((listener, socket_path))
+}
+
+/// Wait for startup result from server via Unix Domain Socket
+fn wait_for_startup_result(
+    listener: &std::os::unix::net::UnixListener,
+) -> Result<ServerStartResult> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut buffer = Vec::new();
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("Timeout waiting for server startup result"));
+        }
+
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.read_to_end(&mut buffer)?;
+                return Ok(serde_json::from_slice(&buffer)?);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("UDS accept error: {}", e));
+            }
+        }
+    }
+}
+
+/// Validate config.toml before starting server
+fn validate_config() -> Result<(), String> {
+    let config_path = get_config_path().map_err(|e| e.to_string())?;
+
+    // Config file doesn't exist is valid (will use defaults)
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+
+    // TOML syntax validation via bifrost-config
+    let config: bifrost_config::Config =
+        toml::from_str(&content).map_err(|e| format!("TOML syntax error: {}", e))?;
+
+    // Semantic validation: adapter names
+    for adapter in config.used_adapters() {
+        if !PREDEFINED_ADAPTERS.contains(&adapter.as_str()) {
+            return Err(format!(
+                "Unknown adapter '{}'. Valid adapters are: {:?}",
+                adapter, PREDEFINED_ADAPTERS
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Start command implementation
 pub fn cmd_start() -> Result<()> {
     println!("\n{}", "LLM Map - Start Server".bold().white().on_blue());
@@ -245,6 +345,12 @@ pub fn cmd_start() -> Result<()> {
 /// Internal start logic (used by restart)
 pub fn cmd_start_internal() -> Result<()> {
     init_bifrost_dir()?;
+
+    // Validate config before starting
+    if let Err(e) = validate_config() {
+        print_error(&format!("Config validation failed:\n\n{}", e));
+        return Err(anyhow::anyhow!("Config validation failed"));
+    }
 
     let deleted = cleanup_old_logs()?;
     if deleted > 0 {
@@ -298,7 +404,6 @@ port = 5564
         return Err(anyhow::anyhow!("Port {} is already in use", port));
     }
 
-    let pid_file = get_pid_file_path()?;
     let log_file = get_today_log_path()?;
     let stdout_path = get_logs_dir()?.join("bifrost.out");
     let stderr_path = get_logs_dir()?.join("bifrost.err");
@@ -327,6 +432,9 @@ port = 5564
     );
     println!();
 
+    // Create Unix Domain Socket for startup communication
+    let (listener, socket_path) = create_startup_socket()?;
+
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -337,6 +445,7 @@ port = 5564
         .open(&stderr_path)?;
 
     let child = Command::new(&server_binary)
+        .env(STARTUP_SOCKET_ENV, socket_path.to_string_lossy().as_ref())
         .stdout(stdout_file)
         .stderr(stderr_file)
         .spawn()
@@ -347,21 +456,48 @@ port = 5564
 
     let server_pid = child.id();
 
-    fs::write(&pid_file, server_pid.to_string())?;
+    // Wait for startup result via UDS (only failures are reported)
+    let startup_failed = match wait_for_startup_result(&listener) {
+        Ok(result) => {
+            // Received a message - must be a failure
+            match result {
+                ServerStartResult::Failure { message } => Some(message),
+                ServerStartResult::Success { .. } => None,
+            }
+        }
+        Err(_) => {
+            // Timeout or error - check if process is still running
+            if !is_process_running(server_pid) {
+                Some("Server process terminated immediately".to_string())
+            } else {
+                None
+            }
+        }
+    };
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Clean up socket file
+    let _ = std::fs::remove_file(&socket_path);
 
-    if !is_process_running(server_pid) {
-        print_error("Server failed to start");
-        return Err(anyhow::anyhow!("Server process terminated immediately"));
+    if let Some(message) = startup_failed {
+        print_error(&format!("Server failed to start: {}", message));
+        println!(
+            "  {} Check error log: {}",
+            "→".cyan(),
+            stderr_path.display()
+        );
+        return Err(anyhow::anyhow!("Server start failed: {}", message));
     }
+
+    // Read the actual daemon PID from the file written by Daemonize
+    let actual_pid =
+        get_stored_pid().context("Failed to read PID file - server may have failed to start")?;
 
     print_success("Server started successfully");
     println!();
     println!(
         "  {} Server PID: {}",
         "→".cyan(),
-        server_pid.to_string().bold()
+        actual_pid.to_string().bold()
     );
     println!(
         "  {} To stop the server, run: {}",
@@ -448,6 +584,13 @@ pub fn cmd_stop() -> Result<()> {
 /// Restart command implementation
 pub fn cmd_restart() -> Result<()> {
     println!("\n{}", "Bifrost - Restart Server".bold().white().on_cyan());
+
+    // Validate config before restarting
+    if let Err(e) = validate_config() {
+        print_error(&format!("Config validation failed:\n\n{}", e));
+        return Err(anyhow::anyhow!("Config validation failed"));
+    }
+
     if is_server_running() {
         if let Some(pid) = get_stored_pid() {
             let mut system = System::new();

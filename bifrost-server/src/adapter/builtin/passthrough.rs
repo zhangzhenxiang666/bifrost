@@ -4,9 +4,9 @@
 //! the original data through unchanged.
 
 use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
-use crate::config::{Endpoint, ProviderConfig};
 use crate::error::LlmMapError;
 use crate::model::{RequestContext, RequestTransform, StreamChunkTransform};
+use crate::types::{Endpoint, ProviderConfig};
 use crate::util;
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -95,7 +95,7 @@ mod tests {
         let config = ProviderConfig {
             base_url: "https://api.example.com".to_string(),
             api_key: "sk-test".to_string(),
-            endpoint: crate::config::Endpoint::OpenAI,
+            endpoint: crate::types::Endpoint::OpenAI,
             adapter: vec![],
             headers: None,
             body: None,

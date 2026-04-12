@@ -12,9 +12,9 @@ use crate::adapter::converter::anthropic_openai::request::anthropic_to_openai_re
 use crate::adapter::converter::anthropic_openai::response::openai_to_anthropic_response;
 use crate::adapter::converter::qwen;
 use crate::adapter::converter::stream::OpenAIToAnthropicStreamProcessor;
-use crate::config::ProviderConfig;
 use crate::error::LlmMapError;
 use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::types::ProviderConfig;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -114,7 +114,7 @@ impl Adapter for AnthropicToQwenAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProviderConfig;
+    use crate::types::ProviderConfig;
     use http::HeaderMap;
 
     fn init_test_credentials() {
@@ -138,7 +138,7 @@ mod tests {
         ProviderConfig {
             base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             api_key: "test-api-key".to_string(),
-            endpoint: crate::config::Endpoint::Anthropic,
+            endpoint: crate::types::Endpoint::Anthropic,
             adapter: vec![],
             headers: None,
             body: None,

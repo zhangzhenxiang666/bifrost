@@ -46,8 +46,8 @@ pub async fn chat_completions_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Endpoint, ProviderConfig};
     use crate::provider::registry::ProviderRegistry;
+    use crate::types::{Config, Endpoint, ProviderConfig};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::json;
@@ -74,7 +74,7 @@ mod tests {
         );
         Config {
             provider,
-            server: crate::config::ServerConfig::default(),
+            server: crate::types::ServerConfig::default(),
             endpoint: Default::default(),
         }
     }

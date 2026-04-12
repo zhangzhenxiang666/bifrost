@@ -4,7 +4,6 @@
 //! and routes for handling mapping requests.
 
 pub mod adapter;
-pub mod config;
 pub mod error;
 pub mod middleware;
 pub mod model;
@@ -12,6 +11,10 @@ pub mod provider;
 pub mod routes;
 pub mod state;
 pub mod util;
+
+// Re-export config from bifrost-config
+pub use bifrost_config::Config;
+pub use bifrost_config::types;
 
 use crate::middleware::request_logger;
 use crate::provider::registry::ProviderRegistry;
@@ -27,7 +30,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
-pub fn run_server(config: config::Config) -> anyhow::Result<()> {
+pub fn run_server(config: Config) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -37,7 +40,7 @@ pub fn run_server(config: config::Config) -> anyhow::Result<()> {
     runtime.block_on(server(config))
 }
 
-async fn server(config: config::Config) -> anyhow::Result<()> {
+async fn server(config: Config) -> anyhow::Result<()> {
     info!("Bifrost service starting...");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 

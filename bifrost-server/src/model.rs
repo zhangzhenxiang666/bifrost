@@ -1,6 +1,6 @@
 //! Types module for shared data structures
 
-use crate::config::ProviderConfig;
+use crate::types::ProviderConfig;
 use http::HeaderMap;
 use http::Uri;
 

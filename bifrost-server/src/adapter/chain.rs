@@ -11,9 +11,9 @@ use std::collections::VecDeque;
 use http::HeaderMap;
 
 use crate::adapter::Adapter;
-use crate::config::ProviderConfig;
 use crate::error::{LlmMapError, Result};
 use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
+use crate::types::ProviderConfig;
 
 /// Executor that manages the adapter chain in an onion architecture.
 ///
@@ -254,7 +254,7 @@ mod tests {
         ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: crate::config::Endpoint::OpenAI,
+            endpoint: crate::types::Endpoint::OpenAI,
             adapter: vec![],
             headers: None,
             body: None,
@@ -327,7 +327,7 @@ mod tests {
         let provider_config = ProviderConfig {
             base_url: "https://example.com".to_string(),
             api_key: "test-key".to_string(),
-            endpoint: crate::config::Endpoint::OpenAI,
+            endpoint: crate::types::Endpoint::OpenAI,
             adapter: vec![],
             headers: None,
             body: None,

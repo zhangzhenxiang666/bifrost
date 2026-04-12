@@ -141,14 +141,40 @@ http://localhost:5564/anthropic
 | ---- | ---- | ------ | ---- |
 | `mapping` | Table | - | 简短模型名称到 `provider@model` 格式的映射 |
 
-```toml
-# 格式: { "客户端传入的模型名" = "provider@实际模型名" }
-[endpoint.openai]
-mapping = { "sonnet" = "openai-provider@gpt-4o" }
+#### 简单字符串映射
 
-[endpoint.anthropic]
-mapping = { "sonnet" = "anthropic-provider@claude-sonnet" }
+```toml
+[endpoint.openai.mapping]
+"sonnet" = "qwen-code@gpt-4o"
 ```
+
+#### 复杂映射（支持 headers 和 body）
+
+复杂映射允许你为目标请求添加额外的 `headers` 或 `body` 字段。
+
+```toml
+[endpoint.openai.mapping]
+# 简单字符串映射
+"sonnet" = "qwen-code@gpt-4o"
+
+# 复杂映射：target 必填，headers/body 可选
+[endpoint.openai.mapping."qwen3.6-plus-flush"]
+target = "qwen-code@coder-model"
+
+[[endpoint.openai.mapping."qwen3.6-plus-flush".headers]]
+name = "X-Custom-Header"
+value = "custom-value"
+
+[[endpoint.openai.mapping."qwen3.6-plus-flush".body]]
+name = "enable_think"
+value = false
+```
+
+| 复杂映射字段 | 类型 | 说明 |
+| ------------ | ---- | ---- |
+| `target` | String | 必填，目标 provider@model 字符串 |
+| `headers` | Array | 可选，额外的请求头数组 |
+| `body` | Array | 可选，额外的请求体字段数组 |
 
 **优先级**：`provider@model` 格式 > endpoint mapping > 报错
 

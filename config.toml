@@ -78,16 +78,29 @@ api_key = "your-key"
 endpoint = "anthropic"
 adapter = ["anthropic-to-openai", "openai-to-qwen"]  # 多适配器：按顺序执行
 
-# =============================================================================
 # Endpoint 配置 - 模型名称映射
 # =============================================================================
 # 可以配置简短模型名称到 "provider@model" 格式的映射
 # 这样客户端无需记忆完整的 provider 前缀，只需使用简短名称即可路由到对应模型
 # 优先级：provider@model 格式 > endpoint mapping > 报错
+[endpoint.openai.mapping]
+"sonnet" = "openai-example@gpt-4o"
 
-[endpoint.openai]
-# 格式: { "客户端传入的模型名" = "provider@实际模型名" }
-mapping = { "sonnet" = "openai-example@gpt-4o" }
+# 复杂映射：包含 target（必填）、headers（可选）、body（可选）
+[endpoint.openai.mapping."qwen3.6-plus-flush"]
+target = "qwen-code@coder-model"
+[[endpoint.openai.mapping."qwen3.6-plus-flush".headers]]
+name = "X-Custom-Header"
+value = "custom-value"
+[[endpoint.openai.mapping."qwen3.6-plus-flush".body]]
+name = "enable_think"
+value = false
 
-[endpoint.anthropic]
-mapping = { "sonnet" = "anthropic-qwen@claude-sonnet-4-20250514" }
+[endpoint.anthropic.mapping]
+"sonnet" = "anthropic-qwen@claude-sonnet-4-20250514"
+
+[endpoint.anthropic.mapping."qwen3.6-plus-flush"]
+target = "anthropic-qwen@claude-sonnet-4-20250514"
+[[endpoint.anthropic.mapping."qwen3.6-plus-flush".headers]]
+name = "X-Require-Auth"
+value = "true"

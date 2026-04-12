@@ -7,9 +7,9 @@ use crate::adapter::builtin::{
     AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter,
 };
 use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
-use crate::config::{Config, Endpoint, EndpointConfig, ProviderConfig};
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
+use crate::types::{Config, Endpoint, EndpointConfig, ProviderConfig};
 use std::collections::HashMap;
 
 /// Registry that manages provider configurations and builds adapter chains.
@@ -217,7 +217,7 @@ impl ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BodyEntry, Endpoint, HeaderEntry};
+    use crate::types::{BodyEntry, Endpoint, HeaderEntry};
     use serde_json::json;
 
     /// Create a test configuration with a single provider
@@ -240,7 +240,7 @@ mod tests {
 
         Config {
             provider,
-            server: crate::config::ServerConfig::default(),
+            server: crate::types::ServerConfig::default(),
             endpoint: Default::default(),
         }
     }
@@ -265,7 +265,7 @@ mod tests {
 
         Config {
             provider,
-            server: crate::config::ServerConfig::default(),
+            server: crate::types::ServerConfig::default(),
             endpoint: Default::default(),
         }
     }
@@ -388,7 +388,7 @@ mod tests {
 
         let config = Config {
             provider,
-            server: crate::config::ServerConfig::default(),
+            server: crate::types::ServerConfig::default(),
             endpoint: Default::default(),
         };
 
@@ -449,7 +449,7 @@ mod tests {
 
         let config = Config {
             provider,
-            server: crate::config::ServerConfig::default(),
+            server: crate::types::ServerConfig::default(),
             endpoint: Default::default(),
         };
 

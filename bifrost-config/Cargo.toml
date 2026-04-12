@@ -1,0 +1,11 @@
+[package]
+name = "bifrost-config"
+version = "0.1.0"
+edition = "2024"
+description = "Shared configuration types and validation for Bifrost"
+
+[dependencies]
+toml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
