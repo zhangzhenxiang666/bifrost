@@ -21,9 +21,17 @@ async fn transform_response(body, status, headers) -> ResponseTransform
 async fn transform_stream_chunk(chunk, event, provider_config) -> StreamChunkTransform
 ```
 
-**内置适配器**: `PassthroughAdapter` | `OpenAIToQwenAdapter` | `AnthropicToOpenAIAdapter` | `AnthropicToQwenAdapter`
+**内置适配器**: `PassthroughAdapter` | `OpenAIToQwenAdapter` | `AnthropicToOpenAIAdapter` | `AnthropicToQwenAdapter` | `ResponsesToChatAdapter`
 
 **Adapter Chain (OnionExecutor)**: 正向 A→B→C→Upstream，反向 Upstream→C→B→A
+
+### OpenAI Responses Converter (`converter/openai_responses/`)
+
+`ResponseToChatAdapter` 使用的转换模块，将 OpenAI Responses API 与 Chat Completions API 互相转换:
+
+- `request.rs` - Responses 请求 → Chat 请求 (`responses_to_chat_request`)
+- `response.rs` - Chat 响应 → Responses 响应 (`chat_to_responses_response`)
+- `stream/` - 流式 Responses ↔ 流式 Chat 转换
 
 ### ProviderRegistry (`provider/registry.rs`)
 
@@ -47,6 +55,8 @@ async fn transform_stream_chunk(chunk, event, provider_config) -> StreamChunkTra
 |------|------|
 | `POST /openai/chat/completions` | OpenAI 兼容 |
 | `POST /openai/v1/chat/completions`| OpenAI 兼容 |
+| `POST /openai/responses` | OpenAI Responses API → Chat 转换 |
+| `POST /openai/v1/responses` | OpenAI Responses API → Chat 转换 |
 | `POST /anthropic/v1/messages` | Anthropic 兼容 |
 | `POST /anthropic/messages` | Anthropic 兼容 |
 

@@ -4,7 +4,7 @@
 //! and builds adapter chains for request execution.
 
 use crate::adapter::builtin::{
-    AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter, ResponseToChatAdapter,
+    AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter, ResponsesToChatAdapter,
 };
 use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
 use crate::error::{LlmMapError, Result};
@@ -177,8 +177,8 @@ impl ProviderRegistry {
                     "anthropic_to_qwen" | "anthropic-to-qwen" => {
                         Box::new(AnthropicToQwenAdapter::new())
                     }
-                    "response_to_chat" | "response-to-chat" => {
-                        Box::new(ResponseToChatAdapter::new())
+                    "responses_to_chat" | "responses-to-chat" => {
+                        Box::new(ResponsesToChatAdapter::new())
                     }
                     _ => {
                         return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));

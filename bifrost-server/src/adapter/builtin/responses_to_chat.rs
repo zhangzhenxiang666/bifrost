@@ -10,17 +10,17 @@ use crate::model::{
 use async_trait::async_trait;
 use http::HeaderMap;
 
-pub struct ResponseToChatAdapter {
+pub struct ResponsesToChatAdapter {
     stream_processor: ChatToResponsesStreamProcessor,
 }
 
-impl Default for ResponseToChatAdapter {
+impl Default for ResponsesToChatAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ResponseToChatAdapter {
+impl ResponsesToChatAdapter {
     pub fn new() -> Self {
         Self {
             stream_processor: ChatToResponsesStreamProcessor::new(),
@@ -29,7 +29,7 @@ impl ResponseToChatAdapter {
 }
 
 #[async_trait]
-impl Adapter for ResponseToChatAdapter {
+impl Adapter for ResponsesToChatAdapter {
     type Error = LlmMapError;
 
     async fn transform_request(

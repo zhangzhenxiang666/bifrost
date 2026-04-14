@@ -1,5 +1,3 @@
-//! Bifrost CLI - Service management for Bifrost server
-
 mod commands;
 mod config;
 
@@ -36,13 +34,5 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Start => commands::cmd_start(),
-        Commands::Stop => commands::cmd_stop(),
-        Commands::Restart => commands::cmd_restart(),
-        Commands::Status => commands::cmd_status(),
-        Commands::List => commands::cmd_list(),
-        Commands::Upgrade => commands::cmd_upgrade(),
-    }
+    commands::handle_command(cli.command)
 }
