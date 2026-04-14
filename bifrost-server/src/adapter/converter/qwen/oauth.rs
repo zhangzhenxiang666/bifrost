@@ -232,13 +232,12 @@ pub static OAUTH_CREDS_MANAGER: OnceLock<OAuthCredentialsManager> = OnceLock::ne
 /// # Example
 ///
 /// ```rust
-/// // In your adapter's transform_request method
+/// // Initialize OAuth credentials manager
 /// use bifrost_server::adapter::converter::qwen;
-/// #[tokio::main]
-/// async fn main() -> bifrost_server::error::Result<()> {
+///
+/// fn main() -> bifrost_server::error::Result<()> {
 ///     qwen::ensure_oauth_manager_initialized()?;
-///     let manager = qwen::OAUTH_CREDS_MANAGER.get().unwrap();
-///     manager.ensure_valid_token().await?;
+///     // Manager is ready to use (get it via qwen::OAUTH_CREDS_MANAGER.get())
 ///     Ok(())
 /// }
 /// ```

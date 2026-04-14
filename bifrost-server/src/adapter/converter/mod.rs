@@ -10,6 +10,7 @@
 //! - `qwen` - Qwen-specific utilities (OAuth, headers)
 
 pub mod anthropic_openai;
+pub mod openai_responses;
 pub mod qwen;
 pub mod stream;
 

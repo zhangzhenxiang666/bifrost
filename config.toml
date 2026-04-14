@@ -87,20 +87,23 @@ adapter = ["anthropic-to-openai", "openai-to-qwen"]  # 多适配器：按顺序�
 "sonnet" = "openai-example@gpt-4o"
 
 # 复杂映射：包含 target（必填）、headers（可选）、body（可选）
-[endpoint.openai.mapping."qwen3.6-plus-flush"]
+[endpoint.openai.mapping."qwen3.6-plus-flash"]
 target = "qwen-code@coder-model"
-[[endpoint.openai.mapping."qwen3.6-plus-flush".headers]]
+
+[[endpoint.openai.mapping."qwen3.6-plus-flash".headers]]
 name = "X-Custom-Header"
 value = "custom-value"
-[[endpoint.openai.mapping."qwen3.6-plus-flush".body]]
-name = "enable_think"
+
+[[endpoint.openai.mapping."qwen3.6-plus-flash".body]]
+name = "enable_thinking"
 value = false
 
 [endpoint.anthropic.mapping]
 "sonnet" = "anthropic-qwen@claude-sonnet-4-20250514"
 
-[endpoint.anthropic.mapping."qwen3.6-plus-flush"]
+[endpoint.anthropic.mapping."qwen3.6-plus-flash"]
 target = "anthropic-qwen@claude-sonnet-4-20250514"
-[[endpoint.anthropic.mapping."qwen3.6-plus-flush".headers]]
+
+[[endpoint.anthropic.mapping."qwen3.6-plus-flash".headers]]
 name = "X-Require-Auth"
 value = "true"

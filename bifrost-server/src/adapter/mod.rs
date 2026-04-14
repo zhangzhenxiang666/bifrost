@@ -14,8 +14,10 @@ pub mod builtin;
 pub mod chain;
 pub mod converter;
 
-use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
-use crate::types::ProviderConfig;
+use crate::model::{
+    RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext,
+    StreamChunkTransform,
+};
 
 pub use builtin::PassthroughAdapter;
 pub use chain::OnionExecutor;
@@ -61,21 +63,16 @@ pub trait Adapter: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `body` - The response body as JSON
-    /// * `status` - The HTTP status code
-    /// * `headers` - The response headers
+    /// * `context` - The response context containing body, status, and headers
     ///
     /// # Returns
     ///
     /// A [`ResponseTransform`] containing the modified response data.
-    #[allow(unused_variables)]
     async fn transform_response(
         &self,
-        body: serde_json::Value,
-        status: http::StatusCode,
-        headers: &http::HeaderMap,
+        context: ResponseContext<'_>,
     ) -> Result<ResponseTransform, Self::Error> {
-        Ok(ResponseTransform::new(body))
+        Ok(ResponseTransform::new(context.body))
     }
 
     /// Transform a streaming response chunk from the LLM provider.
@@ -85,19 +82,16 @@ pub trait Adapter: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `chunk` - The streaming chunk data as JSON
+    /// * `context` - The stream chunk context containing chunk, event, and provider config
     ///
     /// # Returns
     ///
     /// A [`StreamChunkTransform`] containing the modified chunk data.
     /// Use [`StreamChunkTransform::with_event`] to specify an SSE event type.
-    #[allow(unused_variables)]
     async fn transform_stream_chunk(
         &self,
-        chunk: serde_json::Value,
-        event: &str,
-        provider_config: &ProviderConfig,
+        context: StreamChunkContext<'_>,
     ) -> Result<StreamChunkTransform, Self::Error> {
-        Ok(StreamChunkTransform::new(chunk))
+        Ok(StreamChunkTransform::new(context.chunk))
     }
 }

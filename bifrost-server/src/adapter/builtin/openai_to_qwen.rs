@@ -79,6 +79,7 @@ impl Adapter for OpenAIToQwenAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ResponseContext;
     use crate::types::ProviderConfig;
     use http::HeaderMap;
 
@@ -216,7 +217,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let result = adapter
-            .transform_response(body.clone(), status, &headers)
+            .transform_response(ResponseContext::new(body.clone(), status, &headers))
             .await
             .unwrap();
 

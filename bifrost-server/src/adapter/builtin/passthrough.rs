@@ -5,8 +5,8 @@
 
 use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
 use crate::error::LlmMapError;
-use crate::model::{RequestContext, RequestTransform, StreamChunkTransform};
-use crate::types::{Endpoint, ProviderConfig};
+use crate::model::{RequestContext, RequestTransform, StreamChunkContext, StreamChunkTransform};
+use crate::types::Endpoint;
 use crate::util;
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -66,14 +66,15 @@ impl Adapter for PassthroughAdapter {
 
     async fn transform_stream_chunk(
         &self,
-        chunk: serde_json::Value,
-        event: &str,
-        _provider_config: &ProviderConfig,
+        context: StreamChunkContext<'_>,
     ) -> Result<StreamChunkTransform, Self::Error> {
-        if !event.is_empty() {
-            Ok(StreamChunkTransform::new_with_event(chunk, event))
+        if !context.event.is_empty() {
+            Ok(StreamChunkTransform::new_with_event(
+                context.chunk,
+                context.event,
+            ))
         } else {
-            Ok(StreamChunkTransform::new(chunk))
+            Ok(StreamChunkTransform::new(context.chunk))
         }
     }
 }
@@ -81,6 +82,8 @@ impl Adapter for PassthroughAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ResponseContext;
+    use crate::types::ProviderConfig;
     use http::HeaderMap;
 
     #[tokio::test]
@@ -133,7 +136,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let result = adapter
-            .transform_response(body.clone(), status, &headers)
+            .transform_response(ResponseContext::new(body.clone(), status, &headers))
             .await
             .unwrap();
 

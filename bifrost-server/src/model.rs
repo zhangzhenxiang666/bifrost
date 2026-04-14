@@ -31,6 +31,44 @@ impl<'a> RequestContext<'a> {
     }
 }
 
+/// Context for response transformation containing all input parameters.
+pub struct ResponseContext<'a> {
+    pub body: serde_json::Value,
+    pub status: http::StatusCode,
+    pub headers: &'a HeaderMap,
+}
+
+impl<'a> ResponseContext<'a> {
+    pub fn new(body: serde_json::Value, status: http::StatusCode, headers: &'a HeaderMap) -> Self {
+        Self {
+            body,
+            status,
+            headers,
+        }
+    }
+}
+
+/// Context for stream chunk transformation containing all input parameters.
+pub struct StreamChunkContext<'a> {
+    pub chunk: serde_json::Value,
+    pub event: &'a str,
+    pub provider_config: &'a ProviderConfig,
+}
+
+impl<'a> StreamChunkContext<'a> {
+    pub fn new(
+        chunk: serde_json::Value,
+        event: &'a str,
+        provider_config: &'a ProviderConfig,
+    ) -> Self {
+        Self {
+            chunk,
+            event,
+            provider_config,
+        }
+    }
+}
+
 pub struct RequestTransform {
     pub body: serde_json::Value,
     pub url: Option<String>,

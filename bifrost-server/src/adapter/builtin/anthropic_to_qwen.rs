@@ -13,10 +13,12 @@ use crate::adapter::converter::anthropic_openai::response::openai_to_anthropic_r
 use crate::adapter::converter::qwen;
 use crate::adapter::converter::stream::OpenAIToAnthropicStreamProcessor;
 use crate::error::LlmMapError;
-use crate::model::{RequestContext, RequestTransform, ResponseTransform, StreamChunkTransform};
-use crate::types::ProviderConfig;
+use crate::model::{
+    RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext,
+    StreamChunkTransform,
+};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::json;
 
 pub struct AnthropicToQwenAdapter {
     /// Stream processor for OpenAI → Anthropic stream conversion
@@ -90,24 +92,18 @@ impl Adapter for AnthropicToQwenAdapter {
 
     async fn transform_response(
         &self,
-        body: Value,
-        _status: http::StatusCode,
-        _headers: &http::HeaderMap,
+        context: ResponseContext<'_>,
     ) -> Result<ResponseTransform, Self::Error> {
-        // OpenAI response → Anthropic response
-        let body = openai_to_anthropic_response(body)?;
+        let body = openai_to_anthropic_response(context.body)?;
         Ok(ResponseTransform::new(body))
     }
 
     async fn transform_stream_chunk(
         &self,
-        chunk: Value,
-        _event: &str,
-        _provider_config: &ProviderConfig,
+        context: StreamChunkContext<'_>,
     ) -> Result<StreamChunkTransform, Self::Error> {
-        // Qwen OpenAI-format stream → Anthropic stream
         self.stream_processor
-            .openai_stream_to_anthropic_stream(chunk)
+            .openai_stream_to_anthropic_stream(context.chunk)
     }
 }
 
@@ -203,7 +199,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let result = adapter
-            .transform_response(body, status, &headers)
+            .transform_response(ResponseContext::new(body, status, &headers))
             .await
             .unwrap();
 
