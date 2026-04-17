@@ -17,7 +17,7 @@ retry_backoff_base_ms = 100  # 指数回避基础延迟（毫秒）
 base_url = "https://api.openai.com/v1"  # 服务提供商的 API 地址
 api_key = "sk-your-key"  # API 密钥
 endpoint = "openai"  # 端点类型，支持 "openai" 或 "anthropic"
-adapter = "passthrough"  # 适配器：passthrough | openai_to_qwen | anthropic_to_qwen | anthropic_to_openai
+adapter = "passthrough"  # 适配器：passthrough | anthropic_to_openai | anthropic-to-openai
 # Provider 级别的额外请求头（会添加到所有请求）
 headers = [
     { name = "X-Provider-Header", value = "provider-value" },
@@ -29,54 +29,38 @@ body = [
     { name = "debug_mode", value = true }
 ]
 
-[provider.qwen]
-base_url = "https://portal.qwen.ai/v1"
-api_key = "your-qwen-key"
-endpoint = "openai"
-adapter = "openai-to-qwen"
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key = "your-key"
+endpoint = "anthropic"
+adapter = "passthrough"
 exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
 extend = true  # 是否继承原始请求的 headers（默认 false，不继承）
 # Provider 级别的额外请求头
 headers = [
-    { name = "X-Qwen-Provider", value = "bifrost-gateway" }
+    { name = "X-Anthropic-Provider", value = "bifrost-gateway" }
 ]
 # Provider 级别的额外请求体字段
 body = [
     { name = "provider_extra", value = "test" }
 ]
 # 模型特定配置
-[[provider.qwen.models]]
-name = "qwen-coder"  # 模型名称
+[[provider.anthropic.models]]
+name = "claude-sonnet-4-20250514"  # 模型名称
 # 该模型的额外请求头（优先级高于 Provider 级别）
 headers = [
-    { name = "X-Model-Header", value = "coder-model" }
+    { name = "X-Model-Header", value = "sonnet-model" }
 ]
 # 该模型的额外请求体字段（会与 Provider 级别合并）
 body = [
-    { name = "model_extra", value = "coder-extra" }
+    { name = "model_extra", value = "sonnet-extra" }
 ]
 
-[[provider.qwen.models]]
-name = "qwen-chat"  # 另一个模型配置
+[[provider.anthropic.models]]
+name = "claude-opus-4-20250514"  # 另一个模型配置
 headers = [
-    { name = "X-Model-Header", value = "chat-model" }
+    { name = "X-Model-Header", value = "opus-model" }
 ]
-
-[provider.anthropic-qwen]
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-api_key = "your-key"
-endpoint = "anthropic"
-adapter = "anthropic-to-qwen"
-# Provider 级别的额外请求头
-headers = [
-    { name = "X-Anthro-Provider", value = "anthro-to-qwen" }
-]
-
-[provider.multi-adapter]
-base_url = "https://api.example.com/v1"
-api_key = "your-key"
-endpoint = "anthropic"
-adapter = ["anthropic-to-openai", "openai-to-qwen"]  # 多适配器：按顺序执行
 
 # Endpoint 配置 - 模型名称映射
 # =============================================================================
@@ -87,23 +71,23 @@ adapter = ["anthropic-to-openai", "openai-to-qwen"]  # 多适配器：按顺序�
 "sonnet" = "openai-example@gpt-4o"
 
 # 复杂映射：包含 target（必填）、headers（可选）、body（可选）
-[endpoint.openai.mapping."qwen3.6-plus-flash"]
-target = "qwen-code@coder-model"
+[endpoint.openai.mapping."claude-sonnet"]
+target = "openai@claude-sonnet-4-20250514"
 
-[[endpoint.openai.mapping."qwen3.6-plus-flash".headers]]
+[[endpoint.openai.mapping."claude-sonnet".headers]]
 name = "X-Custom-Header"
 value = "custom-value"
 
-[[endpoint.openai.mapping."qwen3.6-plus-flash".body]]
+[[endpoint.openai.mapping."claude-sonnet".body]]
 name = "enable_thinking"
 value = false
 
 [endpoint.anthropic.mapping]
-"sonnet" = "anthropic-qwen@claude-sonnet-4-20250514"
+"sonnet" = "anthropic@claude-sonnet-4-20250514"
 
-[endpoint.anthropic.mapping."qwen3.6-plus-flash"]
-target = "anthropic-qwen@claude-sonnet-4-20250514"
+[endpoint.anthropic.mapping."claude-opus"]
+target = "anthropic@claude-opus-4-20250514"
 
-[[endpoint.anthropic.mapping."qwen3.6-plus-flash".headers]]
+[[endpoint.anthropic.mapping."claude-opus".headers]]
 name = "X-Require-Auth"
 value = "true"

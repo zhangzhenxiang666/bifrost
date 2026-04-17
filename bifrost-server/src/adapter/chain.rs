@@ -40,7 +40,8 @@ impl OnionExecutor {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use bifrost_server::adapter::{Adapter, OnionExecutor};
+    /// use bifrost_server::adapter::Adapter;
+    /// use bifrost_server::adapter::chain::OnionExecutor;
     /// use bifrost_server::types::{Endpoint, ProviderConfig};
     /// use bifrost_server::error::{LlmMapError, Result};
     /// use bifrost_server::model::{RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext, StreamChunkTransform};

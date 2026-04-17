@@ -161,3 +161,702 @@ pub fn openai_to_anthropic_response(body: Value) -> Result<Value, LlmMapError> {
 
     Ok(Value::Object(response))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // Basic response transformation tests
+    // ============================================
+
+    #[test]
+    fn test_simple_text_response() {
+        let input = json!({
+            "id": "msg_abc123",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello, world!"
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_abc123",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Hello, world!"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_response_with_id_and_model() {
+        let input = json!({
+            "id": "msg_xyz789",
+            "model": "claude-sonnet-4-20250514",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Test response"
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_xyz789",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{"type": "text", "text": "Test response"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Content type transformation tests
+    // ============================================
+
+    #[test]
+    fn test_text_content_as_string() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Simple text response"
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Simple text response"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_text_content_as_array() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "First part."},
+                        {"type": "text", "text": "Second part."}
+                    ]
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [
+                {"type": "text", "text": "First part."},
+                {"type": "text", "text": "Second part."}
+            ],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_empty_content() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": ""
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Reasoning content tests (o1/o3 models)
+    // ============================================
+
+    #[test]
+    fn test_reasoning_content_in_response() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "The answer is 42.",
+                    "reasoning_content": "Let me think about this problem step by step..."
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [
+                {"type": "thinking", "thinking": "Let me think about this problem step by step..."},
+                {"type": "text", "text": "The answer is 42."}
+            ],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_empty_reasoning_content_still_creates_thinking_block() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!",
+                    "reasoning_content": ""
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": "Hello!"}
+            ],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Tool calls transformation tests
+    // ============================================
+
+    #[test]
+    fn test_single_tool_call() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\": \"Tokyo\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{
+                "type": "tool_use",
+                "id": "call_abc123",
+                "name": "get_weather",
+                "input": {"city": "Tokyo"}
+            }],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_multiple_tool_calls() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "get_time", "arguments": "{\"timezone\": \"JST\"}"}
+                        }
+                    ]
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}},
+                {"type": "tool_use", "id": "call_2", "name": "get_time", "input": {"timezone": "JST"}}
+            ],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_tool_call_with_complex_arguments() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_complex",
+                        "type": "function",
+                        "function": {
+                            "name": "search_recipes",
+                            "arguments": "{\"query\": \"pasta\", \"filters\": {\"cuisine\": \"Italian\", \"max_time\": 30}}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{
+                "type": "tool_use",
+                "id": "call_complex",
+                "name": "search_recipes",
+                "input": {"query": "pasta", "filters": {"cuisine": "Italian", "max_time": 30}}
+            }],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Usage transformation tests
+    // ============================================
+
+    #[test]
+    fn test_usage_with_tokens() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Hi"}
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150
+            }
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 100, "output_tokens": 50}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_usage_with_large_numbers() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Hi"}
+            }],
+            "usage": {
+                "prompt_tokens": 100000,
+                "completion_tokens": 50000,
+                "total_tokens": 150000
+            }
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 100000, "output_tokens": 50000}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_transform_usage_default_values() {
+        let expected = json!({
+            "input_tokens": 0,
+            "output_tokens": 0
+        });
+
+        let result = transform_usage_openai_to_anthropic(None);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_transform_usage_partial_data() {
+        let input = json!({
+            "prompt_tokens": 42
+        });
+
+        let expected = json!({
+            "input_tokens": 42,
+            "output_tokens": 0
+        });
+
+        let result = transform_usage_openai_to_anthropic(Some(&input));
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Finish reason / stop reason tests
+    // ============================================
+
+    #[test]
+    fn test_stop_reason_end_turn() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Done."}
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Done."}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_stop_reason_tool_calls() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "x", "arguments": "{}"}
+                    }]
+                }
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "tool_use", "id": "call_1", "name": "x", "input": {}}],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_stop_reason_max_tokens() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": "Truncated..."}
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "content": [{"type": "text", "text": "Truncated..."}],
+            "stop_reason": "max_tokens",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Error handling tests
+    // ============================================
+
+    #[test]
+    fn test_non_object_body() {
+        let input = json!("not an object");
+        let result = openai_to_anthropic_response(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_choices() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4"
+        });
+
+        let result = openai_to_anthropic_response(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_choices() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": []
+        });
+
+        let result = openai_to_anthropic_response(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_message_in_choice() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop"
+            }]
+        });
+
+        let result = openai_to_anthropic_response(input);
+        assert!(result.is_err());
+    }
+
+    // ============================================
+    // Field passthrough tests
+    // ============================================
+
+    #[test]
+    fn test_created_timestamp_preserved() {
+        let input = json!({
+            "id": "msg_1",
+            "model": "gpt-4",
+            "created": 1712530587,
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Hi"}
+            }]
+        });
+
+        let expected = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "created": 1712530587,
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Complex response tests
+    // ============================================
+
+    #[test]
+    fn test_full_response_with_reasoning_and_tool_call() {
+        let input = json!({
+            "id": "msg_full",
+            "model": "gpt-4",
+            "created": 1712530587,
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "Let me search for that.",
+                    "reasoning_content": "I need to find information about the weather.",
+                    "tool_calls": [{
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{\"query\": \"weather Tokyo\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 25,
+                "completion_tokens": 30,
+                "total_tokens": 55
+            }
+        });
+
+        let expected = json!({
+            "id": "msg_full",
+            "type": "message",
+            "role": "assistant",
+            "model": "gpt-4",
+            "created": 1712530587,
+            "content": [
+                {"type": "thinking", "thinking": "I need to find information about the weather."},
+                {"type": "text", "text": "Let me search for that."},
+                {"type": "tool_use", "id": "call_search", "name": "web_search", "input": {"query": "weather Tokyo"}}
+            ],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 25, "output_tokens": 30}
+        });
+
+        let result = openai_to_anthropic_response(input).unwrap();
+        assert_eq!(result, expected);
+    }
+}

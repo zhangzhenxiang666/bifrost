@@ -3,10 +3,11 @@
 //! This module provides the [`ProviderRegistry`] which manages provider configurations
 //! and builds adapter chains for request execution.
 
+use crate::adapter::Adapter;
 use crate::adapter::builtin::{
-    AnthropicToOpenAIAdapter, AnthropicToQwenAdapter, OpenAIToQwenAdapter, ResponsesToChatAdapter,
+    AnthropicToOpenAIAdapter, OpenAIToAnthropicAdapter, PassthroughAdapter, ResponsesToChatAdapter,
 };
-use crate::adapter::{Adapter, OnionExecutor, PassthroughAdapter};
+use crate::adapter::chain::OnionExecutor;
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
 use crate::types::{Config, Endpoint, EndpointConfig, ProviderConfig};
@@ -91,7 +92,7 @@ impl ProviderRegistry {
     ///
     /// # Arguments
     ///
-    /// * `id` - The provider identifier (e.g., "qwen-code")
+    /// * `id` - The provider identifier (e.g., "anthropic-code")
     ///
     /// # Returns
     ///
@@ -104,7 +105,7 @@ impl ProviderRegistry {
     /// # use bifrost_server::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
-    /// if let Some(provider) = registry.get("qwen-code") {
+    /// if let Some(provider) = registry.get("anthropic-code") {
     ///     println!("Base URL: {}", provider.base_url);
     /// }
     /// ```
@@ -134,7 +135,7 @@ impl ProviderRegistry {
     /// # use bifrost_server::provider::ProviderRegistry;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
-    /// let executor = registry.build_executor("qwen-code").unwrap();
+    /// let executor = registry.build_executor("anthropic-code").unwrap();
     /// ```
     pub fn build_executor(&self, provider_id: &str) -> Result<OnionExecutor> {
         let provider_info = self.providers.get(provider_id).ok_or_else(|| {
@@ -170,15 +171,14 @@ impl ProviderRegistry {
             for name in adapter_names {
                 let adapter: Box<dyn Adapter<Error = LlmMapError>> = match name.as_str() {
                     "passthrough" => Box::new(PassthroughAdapter),
-                    "openai_to_qwen" | "openai-to-qwen" => Box::new(OpenAIToQwenAdapter),
                     "anthropic_to_openai" | "anthropic-to-openai" => {
                         Box::new(AnthropicToOpenAIAdapter::new())
                     }
-                    "anthropic_to_qwen" | "anthropic-to-qwen" => {
-                        Box::new(AnthropicToQwenAdapter::new())
-                    }
                     "responses_to_chat" | "responses-to-chat" => {
                         Box::new(ResponsesToChatAdapter::new())
+                    }
+                    "openai_to_anthropic" | "openai-to-anthropic" => {
+                        Box::new(OpenAIToAnthropicAdapter::new())
                     }
                     _ => {
                         return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));
@@ -252,12 +252,12 @@ mod tests {
     fn create_test_config_with_adapters() -> Config {
         let mut provider = HashMap::new();
         provider.insert(
-            "qwen-provider".to_string(),
+            "anthropic-provider".to_string(),
             ProviderConfig {
-                base_url: "https://api.qwen.com".to_string(),
-                api_key: "qwen-key".to_string(),
-                endpoint: Endpoint::OpenAI,
-                adapter: vec!["openai_to_qwen".to_string()],
+                base_url: "https://api.anthropic.com".to_string(),
+                api_key: "anthropic-key".to_string(),
+                endpoint: Endpoint::Anthropic,
+                adapter: vec!["anthropic_to_openai".to_string()],
                 headers: None,
                 body: None,
                 models: None,
@@ -336,12 +336,13 @@ mod tests {
         let config = create_test_config_with_adapters();
         let registry = ProviderRegistry::from_config(&config);
 
-        let executor = registry.build_executor("qwen-provider").unwrap();
+        let executor = registry.build_executor("anthropic-provider").unwrap();
         assert_eq!(executor.adapter_count(), 1);
 
         // Test that executor can execute request with adapter
         let body = json!({
             "model": "test-model",
+            "max_tokens": 1024,
             "messages": [{"role": "user", "content": "Hello"}]
         });
         let headers = http::HeaderMap::new();
@@ -351,11 +352,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify adapter added Qwen headers
-        assert!(result.headers.is_some());
-        let result_headers = result.headers.unwrap();
-        assert!(result_headers.get("User-Agent").is_some());
-        assert!(result_headers.get("X-DashScope-CacheControl").is_some());
+        // Verify adapter transformed the request body
+        assert!(result.body.get("messages").is_some());
+        assert!(result.body.get("max_tokens").is_some());
     }
 
     #[test]

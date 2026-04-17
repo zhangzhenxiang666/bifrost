@@ -4,12 +4,8 @@ use crate::config::get_config_path;
 
 const PREDEFINED_ADAPTERS: &[&str] = &[
     "passthrough",
-    "openai_to_qwen",
-    "openai-to-qwen",
     "anthropic_to_openai",
     "anthropic-to-openai",
-    "anthropic_to_qwen",
-    "anthropic-to-qwen",
     "responses_to_chat",
     "responses-to-chat",
 ];

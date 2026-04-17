@@ -19,10 +19,6 @@ use crate::model::{
     StreamChunkTransform,
 };
 
-pub use builtin::PassthroughAdapter;
-pub use chain::OnionExecutor;
-pub use converter::stream::OpenAIToAnthropicStreamProcessor;
-
 pub static X_API_KEY: http::HeaderName = http::header::HeaderName::from_static("x-api-key");
 pub static ANTHROPIC_VERSION: (http::HeaderName, http::header::HeaderValue) = (
     http::header::HeaderName::from_static("anthropic-version"),

@@ -1,6 +1,6 @@
 //! Generic route handler utilities for LLM endpoints
 
-use crate::adapter::OnionExecutor;
+use crate::adapter::chain::OnionExecutor;
 use crate::error::{LlmMapError, Result};
 use crate::model::RequestTransform;
 use crate::state::AppState;
@@ -363,6 +363,14 @@ pub async fn handle_llm_request(
     is_stream: bool,
 ) -> Result<axum::response::Response> {
     let ctx = execute_provider_request(state, headers, body, uri).await?;
+
+    let model_name = ctx.body["model"].as_str().unwrap_or("unknown");
+    tracing::info!(
+        target: "upstream",
+        "[Upstream] POST {} | model: {}",
+        ctx.url,
+        model_name
+    );
 
     if is_stream {
         process_stream_request(state, ctx).await

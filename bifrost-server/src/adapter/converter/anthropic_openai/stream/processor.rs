@@ -1,6 +1,6 @@
 //! Stream processor for converting OpenAI-format streams to Anthropic-format events
 
-use crate::adapter::converter::stream::state::OpenAIToAnthropicStreamState;
+use crate::adapter::converter::anthropic_openai::stream::state::OpenAIToAnthropicStreamState;
 use crate::error::LlmMapError;
 use crate::model::StreamChunkTransform;
 use serde_json::{Value, json};
@@ -66,6 +66,87 @@ impl OpenAIToAnthropicStreamProcessor {
     fn state_mut(&self) -> &mut OpenAIToAnthropicStreamState {
         unsafe { &mut *self.stream_state.get() }
     }
+
+    // ── Event constructors ─────────────────────────────────────────────────────
+
+    fn make_content_block_start_simple(
+        index: usize,
+        block_type: &str,
+        key: &str,
+        val: &str,
+    ) -> (Value, Option<String>) {
+        (
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": block_type, (key): val }
+            }),
+            Some("content_block_start".to_string()),
+        )
+    }
+
+    fn make_content_block_start_tool_use(
+        index: usize,
+        id: &str,
+        name: &str,
+    ) -> (Value, Option<String>) {
+        (
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": {}
+                }
+            }),
+            Some("content_block_start".to_string()),
+        )
+    }
+
+    fn make_content_block_delta(
+        index: usize,
+        delta_type: &str,
+        key: &str,
+        value: &str,
+    ) -> (Value, Option<String>) {
+        (
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": { "type": delta_type, (key): value }
+            }),
+            Some("content_block_delta".to_string()),
+        )
+    }
+
+    fn make_content_block_stop(index: usize) -> (Value, Option<String>) {
+        (
+            json!({ "type": "content_block_stop", "index": index }),
+            Some("content_block_stop".to_string()),
+        )
+    }
+
+    fn make_message_delta(stop_reason: &str, output_tokens: u32) -> (Value, Option<String>) {
+        (
+            json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+                "usage": { "output_tokens": output_tokens }
+            }),
+            Some("message_delta".to_string()),
+        )
+    }
+
+    fn make_message_stop() -> (Value, Option<String>) {
+        (
+            json!({ "type": "message_stop" }),
+            Some("message_stop".to_string()),
+        )
+    }
+
+    // ── Public entry point ─────────────────────────────────────────────────────
 
     pub fn openai_stream_to_anthropic_stream(
         &self,
@@ -134,7 +215,6 @@ impl OpenAIToAnthropicStreamProcessor {
             Some("message_start".to_string()),
         ));
 
-        // Single &mut: reset + mark sent in one round-trip.
         {
             let s = self.state_mut();
             s.reset();
@@ -156,7 +236,6 @@ impl OpenAIToAnthropicStreamProcessor {
     ) -> Result<StreamChunkTransform, LlmMapError> {
         let mut events = Vec::with_capacity(4);
 
-        // Borrow &str directly — no heap allocation needed.
         let thinking_opt = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(|v| v.as_str())
@@ -167,86 +246,59 @@ impl OpenAIToAnthropicStreamProcessor {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
-        // Borrow the array directly — no clone needed.
         let tool_calls_opt = delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(|v| v.as_array());
 
-        // ── Thinking block ────────────────────────────────────────────────────
         if let Some(thinking) = thinking_opt {
             if !self.state().has_thinking_started() {
-                // One &mut round-trip: allocate index + set active block.
                 let new_index = self.state_mut().init_thinking_block();
-                events.push((
-                    json!({
-                        "type": "content_block_start",
-                        "index": new_index,
-                        "content_block": { "type": "thinking", "thinking": "" }
-                    }),
-                    Some("content_block_start".to_string()),
+                events.push(Self::make_content_block_start_simple(
+                    new_index, "thinking", "thinking", "",
                 ));
-                events.push((
-                    json!({
-                        "type": "content_block_delta",
-                        "index": new_index,
-                        "delta": { "type": "thinking_delta", "thinking": thinking }
-                    }),
-                    Some("content_block_delta".to_string()),
+                events.push(Self::make_content_block_delta(
+                    new_index,
+                    "thinking_delta",
+                    "thinking",
+                    thinking,
                 ));
             } else {
                 let idx = self.state().current_active_block_index();
-                events.push((
-                    json!({
-                        "type": "content_block_delta",
-                        "index": idx,
-                        "delta": { "type": "thinking_delta", "thinking": thinking }
-                    }),
-                    Some("content_block_delta".to_string()),
+                events.push(Self::make_content_block_delta(
+                    idx,
+                    "thinking_delta",
+                    "thinking",
+                    thinking,
                 ));
             }
         }
 
-        // ── Text block ────────────────────────────────────────────────────────
         if let Some(text) = text_opt {
             if !self.state().has_text_started() {
-                // One &mut round-trip: allocate index + close old block + set active.
                 let (new_index, old_opt) = self.state_mut().init_text_block();
                 if let Some(old) = old_opt {
-                    events.push((
-                        json!({ "type": "content_block_stop", "index": old }),
-                        Some("content_block_stop".to_string()),
-                    ));
+                    events.push(Self::make_content_block_stop(old));
                 }
-                events.push((
-                    json!({
-                        "type": "content_block_start",
-                        "index": new_index,
-                        "content_block": { "type": "text", "text": "" }
-                    }),
-                    Some("content_block_start".to_string()),
+                events.push(Self::make_content_block_start_simple(
+                    new_index, "text", "text", "",
                 ));
-                events.push((
-                    json!({
-                        "type": "content_block_delta",
-                        "index": new_index,
-                        "delta": { "type": "text_delta", "text": text }
-                    }),
-                    Some("content_block_delta".to_string()),
+                events.push(Self::make_content_block_delta(
+                    new_index,
+                    "text_delta",
+                    "text",
+                    text,
                 ));
             } else {
                 let idx = self.state().current_active_block_index();
-                events.push((
-                    json!({
-                        "type": "content_block_delta",
-                        "index": idx,
-                        "delta": { "type": "text_delta", "text": text }
-                    }),
-                    Some("content_block_delta".to_string()),
+                events.push(Self::make_content_block_delta(
+                    idx,
+                    "text_delta",
+                    "text",
+                    text,
                 ));
             }
         }
 
-        // ── Tool calls ────────────────────────────────────────────────────────
         if let Some(tool_calls) = tool_calls_opt {
             for tool_call_value in tool_calls {
                 let tool_call = tool_call_value
@@ -267,31 +319,18 @@ impl OpenAIToAnthropicStreamProcessor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                // One &mut round-trip: get-or-create block index.
                 let (block_index, needs_start) = self
                     .state_mut()
                     .get_or_create_tool_call_block(tool_call_index);
 
                 if needs_start {
-                    // One more &mut round-trip to close the previous active block.
                     if let Some(old) = self.state_mut().set_current_active_block(block_index) {
-                        events.push((
-                            json!({ "type": "content_block_stop", "index": old }),
-                            Some("content_block_stop".to_string()),
-                        ));
+                        events.push(Self::make_content_block_stop(old));
                     }
-                    events.push((
-                        json!({
-                            "type": "content_block_start",
-                            "index": block_index,
-                            "content_block": {
-                                "type": "tool_use",
-                                "id": id,
-                                "name": name,
-                                "input": {}
-                            }
-                        }),
-                        Some("content_block_start".to_string()),
+                    events.push(Self::make_content_block_start_tool_use(
+                        block_index,
+                        id,
+                        name,
                     ));
                 }
 
@@ -301,19 +340,16 @@ impl OpenAIToAnthropicStreamProcessor {
                     .and_then(|v| v.get("arguments"))
                     .and_then(|v| v.as_str())
                 {
-                    events.push((
-                        json!({
-                            "type": "content_block_delta",
-                            "index": block_index,
-                            "delta": { "type": "input_json_delta", "partial_json": arguments }
-                        }),
-                        Some("content_block_delta".to_string()),
+                    events.push(Self::make_content_block_delta(
+                        block_index,
+                        "input_json_delta",
+                        "partial_json",
+                        arguments,
                     ));
                 }
             }
         }
 
-        // ── Finish ────────────────────────────────────────────────────────────
         if let Some(reason) = finish_reason {
             events.extend(self.generate_finishing_events(Some(reason), usage)?.events);
         }
@@ -329,10 +365,7 @@ impl OpenAIToAnthropicStreamProcessor {
         let mut events = Vec::with_capacity(3);
 
         if let Some(old) = self.state_mut().set_current_active_block(usize::MAX) {
-            events.push((
-                json!({ "type": "content_block_stop", "index": old }),
-                Some("content_block_stop".to_string()),
-            ));
+            events.push(Self::make_content_block_stop(old));
         }
 
         let stop_reason = match finish_reason {
@@ -346,18 +379,8 @@ impl OpenAIToAnthropicStreamProcessor {
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as u32;
 
-        events.push((
-            json!({
-                "type": "message_delta",
-                "delta": { "stop_reason": stop_reason, "stop_sequence": null },
-                "usage": { "output_tokens": output_tokens }
-            }),
-            Some("message_delta".to_string()),
-        ));
-        events.push((
-            json!({ "type": "message_stop" }),
-            Some("message_stop".to_string()),
-        ));
+        events.push(Self::make_message_delta(stop_reason, output_tokens));
+        events.push(Self::make_message_stop());
 
         self.state_mut().reset();
 

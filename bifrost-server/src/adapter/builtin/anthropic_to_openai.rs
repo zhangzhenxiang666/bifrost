@@ -1,7 +1,7 @@
 use crate::adapter::Adapter;
 use crate::adapter::converter::anthropic_openai::request::anthropic_to_openai_request;
 use crate::adapter::converter::anthropic_openai::response::openai_to_anthropic_response;
-use crate::adapter::converter::stream::OpenAIToAnthropicStreamProcessor;
+use crate::adapter::converter::anthropic_openai::stream::OpenAIToAnthropicStreamProcessor;
 use crate::error::LlmMapError;
 use crate::model::{
     RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext,
