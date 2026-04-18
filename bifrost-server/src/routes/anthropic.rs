@@ -1,8 +1,8 @@
 //! Anthropic-compatible route for messages endpoint
 
-use crate::error::Result;
 use crate::routes::handler;
 use crate::state::AppState;
+use crate::{error::Result, routes::RouteEndpoint};
 use axum::{Json, extract::State};
 use serde_json::Value;
 
@@ -10,7 +10,6 @@ use serde_json::Value;
 #[axum::debug_handler]
 pub async fn messages_v1(
     State(state): State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response> {
@@ -19,29 +18,23 @@ pub async fn messages_v1(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, headers, body, uri, is_stream).await
+    handler::handle_llm_request(
+        &state,
+        RouteEndpoint::AnthropicMessages,
+        headers,
+        body,
+        is_stream,
+    )
+    .await
 }
 
 #[axum::debug_handler]
 pub async fn messages(
     state: State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     body: Json<Value>,
 ) -> Result<axum::response::Response> {
-    let new_uri = if let Some(pq) = uri.path_and_query() {
-        let path = pq.path();
-        let new_path = path.replacen("/anthropic", "/anthropic/v1", 1);
-        let new_pq_str = match pq.query() {
-            Some(query) => format!("{}?{}", new_path, query),
-            None => new_path.to_string(),
-        };
-        new_pq_str.parse().unwrap_or(uri)
-    } else {
-        uri
-    };
-
-    messages_v1(state, new_uri, headers, body).await
+    messages_v1(state, headers, body).await
 }
 
 #[cfg(test)]
@@ -65,7 +58,6 @@ mod tests {
                 base_url: mock_server_uri.to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::Anthropic,
-                adapter: vec![],
                 headers: None,
                 body: None,
                 models: None,
@@ -76,7 +68,7 @@ mod tests {
         Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         }
     }
 

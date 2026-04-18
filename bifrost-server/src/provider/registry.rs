@@ -10,7 +10,8 @@ use crate::adapter::builtin::{
 use crate::adapter::chain::OnionExecutor;
 use crate::error::{LlmMapError, Result};
 use crate::provider::client::HttpClient;
-use crate::types::{Config, Endpoint, EndpointConfig, ProviderConfig};
+use crate::routes::RouteEndpoint;
+use crate::types::{AliasEntry, Config, Endpoint, ProviderConfig};
 use std::collections::HashMap;
 
 /// Registry that manages provider configurations and builds adapter chains.
@@ -23,7 +24,7 @@ use std::collections::HashMap;
 pub struct ProviderRegistry {
     providers: HashMap<String, ProviderConfig>,
     http_client: HttpClient,
-    endpoint_mapping: HashMap<Endpoint, EndpointConfig>,
+    alias: HashMap<String, AliasEntry>,
 }
 
 impl ProviderRegistry {
@@ -62,29 +63,15 @@ impl ProviderRegistry {
         let timeout_secs = config.server.timeout_secs.unwrap_or(600);
         let retry_config = crate::provider::client::RetryConfig {
             max_retries: config.server.max_retries.unwrap_or(5),
-            backoff_base_ms: config.server.retry_backoff_base_ms.unwrap_or(100),
+            backoff_base_ms: config.server.retry_backoff_base_ms.unwrap_or(700),
         };
         let http_client =
             HttpClient::with_retry(timeout_secs, config.server.proxy.as_deref(), retry_config);
 
-        // Build endpoint mapping from config (convert String keys to Endpoint enum)
-        let endpoint_mapping: HashMap<Endpoint, EndpointConfig> = config
-            .endpoint
-            .iter()
-            .map(|(k, v)| {
-                let endpoint = if k == "anthropic" {
-                    Endpoint::Anthropic
-                } else {
-                    Endpoint::OpenAI
-                };
-                (endpoint, v.clone())
-            })
-            .collect();
-
         Self {
             providers,
             http_client,
-            endpoint_mapping,
+            alias: config.alias.clone(),
         }
     }
 
@@ -115,9 +102,8 @@ impl ProviderRegistry {
 
     /// Build an adapter chain (OnionExecutor) for the specified provider.
     ///
-    /// This method creates the adapter chain based on the provider's configuration:
-    /// - If no adapters are specified, uses `PassthroughAdapter`
-    /// - If adapters are specified, builds the chain in order
+    /// This method creates the adapter chain based on the provider's endpoint type.
+    /// The adapter is dynamically created internally based on route and endpoint combination.
     ///
     /// # Arguments
     ///
@@ -133,58 +119,61 @@ impl ProviderRegistry {
     /// ```rust,no_run
     /// # use bifrost_server::Config;
     /// # use bifrost_server::provider::ProviderRegistry;
+    /// # use bifrost_server::routes::RouteEndpoint;
     /// # let config = Config::from_file("config.toml").unwrap();
     /// let registry = ProviderRegistry::from_config(&config);
-    /// let executor = registry.build_executor("anthropic-code").unwrap();
+    /// let executor = registry.build_executor("anthropic-code", &RouteEndpoint::OpenAIChat).unwrap();
     /// ```
-    pub fn build_executor(&self, provider_id: &str) -> Result<OnionExecutor> {
-        let provider_info = self.providers.get(provider_id).ok_or_else(|| {
+    pub fn build_executor(
+        &self,
+        provider_id: &str,
+        route: &RouteEndpoint,
+    ) -> Result<OnionExecutor> {
+        let provider = self.providers.get(provider_id).ok_or_else(|| {
             LlmMapError::Provider(format!("Provider '{}' not found", provider_id))
         })?;
 
-        let provider_config = provider_info.clone();
-        let adapters = self.build_adapter_chain(&provider_config.adapter)?;
+        let adapters = self.build_adapter_chain(route, &provider.endpoint)?;
 
-        Ok(OnionExecutor::new(adapters, provider_config))
+        Ok(OnionExecutor::new(adapters))
     }
 
-    /// Build the adapter chain based on configuration.
+    /// Build the adapter chain based on route and endpoint type.
     ///
     /// # Arguments
     ///
-    /// * `adapter_names` - List of adapter names from configuration
+    /// * `route` - The route endpoint (OpenAIChat, OpenAIResponses, AnthropicMessages)
+    /// * `endpoint` - The provider endpoint type (OpenAI or Anthropic)
     ///
     /// # Returns
     ///
     /// A vector of boxed adapters ready for execution.
     fn build_adapter_chain(
         &self,
-        adapter_names: &[String],
+        route: &RouteEndpoint,
+        endpoint: &Endpoint,
     ) -> Result<Vec<Box<dyn Adapter<Error = LlmMapError>>>> {
         let mut adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = Vec::new();
 
-        if adapter_names.is_empty() {
-            // Default to passthrough if no adapters specified
-            adapters.push(Box::new(PassthroughAdapter));
-        } else {
-            // Build adapter chain from names
-            for name in adapter_names {
-                let adapter: Box<dyn Adapter<Error = LlmMapError>> = match name.as_str() {
-                    "passthrough" => Box::new(PassthroughAdapter),
-                    "anthropic_to_openai" | "anthropic-to-openai" => {
-                        Box::new(AnthropicToOpenAIAdapter::new())
-                    }
-                    "responses_to_chat" | "responses-to-chat" => {
-                        Box::new(ResponsesToChatAdapter::new())
-                    }
-                    "openai_to_anthropic" | "openai-to-anthropic" => {
-                        Box::new(OpenAIToAnthropicAdapter::new())
-                    }
-                    _ => {
-                        return Err(LlmMapError::Adapter(format!("Unknown adapter: {}", name)));
-                    }
-                };
-                adapters.push(adapter);
+        match (route, endpoint) {
+            (RouteEndpoint::OpenAIChat, Endpoint::OpenAI) => {
+                adapters.push(Box::new(PassthroughAdapter));
+            }
+            (RouteEndpoint::OpenAIChat, Endpoint::Anthropic) => {
+                adapters.push(Box::new(OpenAIToAnthropicAdapter::new()));
+            }
+            (RouteEndpoint::OpenAIResponses, Endpoint::OpenAI) => {
+                adapters.push(Box::new(ResponsesToChatAdapter::new()));
+            }
+            (RouteEndpoint::OpenAIResponses, Endpoint::Anthropic) => {
+                adapters.push(Box::new(ResponsesToChatAdapter::new()));
+                adapters.push(Box::new(OpenAIToAnthropicAdapter::new()));
+            }
+            (RouteEndpoint::AnthropicMessages, Endpoint::Anthropic) => {
+                adapters.push(Box::new(PassthroughAdapter));
+            }
+            (RouteEndpoint::AnthropicMessages, Endpoint::OpenAI) => {
+                adapters.push(Box::new(AnthropicToOpenAIAdapter::new()));
             }
         }
 
@@ -211,9 +200,8 @@ impl ProviderRegistry {
         &self.providers
     }
 
-    /// Get endpoint configuration by endpoint type.
-    pub fn get_endpoint_config(&self, endpoint: &Endpoint) -> Option<&EndpointConfig> {
-        self.endpoint_mapping.get(endpoint)
+    pub fn get_alias_entry(&self, alias: &str) -> Option<&AliasEntry> {
+        self.alias.get(alias)
     }
 }
 
@@ -232,7 +220,6 @@ mod tests {
                 base_url: "https://api.test.com".to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::OpenAI,
-                adapter: vec![],
                 headers: None,
                 body: None,
                 models: None,
@@ -244,12 +231,12 @@ mod tests {
         Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         }
     }
 
-    /// Create a test configuration with multiple adapters
-    fn create_test_config_with_adapters() -> Config {
+    /// Create a test configuration with different endpoint type
+    fn create_test_config_with_endpoint() -> Config {
         let mut provider = HashMap::new();
         provider.insert(
             "anthropic-provider".to_string(),
@@ -257,7 +244,6 @@ mod tests {
                 base_url: "https://api.anthropic.com".to_string(),
                 api_key: "anthropic-key".to_string(),
                 endpoint: Endpoint::Anthropic,
-                adapter: vec!["anthropic_to_openai".to_string()],
                 headers: None,
                 body: None,
                 models: None,
@@ -269,7 +255,7 @@ mod tests {
         Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         }
     }
 
@@ -310,33 +296,27 @@ mod tests {
         let config = create_test_config();
         let registry = ProviderRegistry::from_config(&config);
 
-        let executor = registry.build_executor("test-provider").unwrap();
+        let executor = registry
+            .build_executor("test-provider", &RouteEndpoint::OpenAIChat)
+            .unwrap();
         assert_eq!(executor.adapter_count(), 1);
 
         // Test that executor can execute request
         let body = json!({"test": "data"});
-        let headers = http::HeaderMap::new();
-        let uri = http::Uri::from_static("/openai/chat/completions");
 
-        let result = executor
-            .execute_request(&uri, body, &headers)
-            .await
-            .unwrap();
+        let result = executor.execute_request(body).await.unwrap();
 
-        // Verify URL is set from provider config
-        // Verify URL is set from provider config with endpoint path
-        assert_eq!(
-            result.url,
-            Some("https://api.test.com/chat/completions".to_string())
-        );
+        assert_eq!(result.body, json!({"test": "data"}));
     }
 
     #[tokio::test]
     async fn test_build_executor_with_adapter() {
-        let config = create_test_config_with_adapters();
+        let config = create_test_config_with_endpoint();
         let registry = ProviderRegistry::from_config(&config);
 
-        let executor = registry.build_executor("anthropic-provider").unwrap();
+        let executor = registry
+            .build_executor("anthropic-provider", &RouteEndpoint::OpenAIChat)
+            .unwrap();
         assert_eq!(executor.adapter_count(), 1);
 
         // Test that executor can execute request with adapter
@@ -345,12 +325,7 @@ mod tests {
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": "Hello"}]
         });
-        let headers = http::HeaderMap::new();
-        let uri = http::Uri::from_static("https://openai.com/v1");
-        let result = executor
-            .execute_request(&uri, body, &headers)
-            .await
-            .unwrap();
+        let result = executor.execute_request(body).await.unwrap();
 
         // Verify adapter transformed the request body
         assert!(result.body.get("messages").is_some());
@@ -362,44 +337,11 @@ mod tests {
         let config = create_test_config();
         let registry = ProviderRegistry::from_config(&config);
 
-        let result = registry.build_executor("non-existent");
+        let result = registry.build_executor("non-existent", &RouteEndpoint::OpenAIChat);
         assert!(result.is_err());
 
         if let Err(e) = result {
             assert!(e.to_string().contains("not found"));
-        }
-    }
-
-    #[test]
-    fn test_build_executor_unknown_adapter() {
-        let mut provider = HashMap::new();
-        provider.insert(
-            "bad-provider".to_string(),
-            ProviderConfig {
-                base_url: "https://api.test.com".to_string(),
-                api_key: "test-key".to_string(),
-                endpoint: Endpoint::OpenAI,
-                adapter: vec!["unknown_adapter".to_string()],
-                headers: None,
-                body: None,
-                models: None,
-                exclude_headers: None,
-                extend: false,
-            },
-        );
-
-        let config = Config {
-            provider,
-            server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
-        };
-
-        let registry = ProviderRegistry::from_config(&config);
-        let result = registry.build_executor("bad-provider");
-        assert!(result.is_err());
-
-        if let Err(e) = result {
-            assert!(e.to_string().contains("Unknown adapter"));
         }
     }
 
@@ -434,7 +376,6 @@ mod tests {
                 base_url: "https://api.custom.com".to_string(),
                 api_key: "custom-key".to_string(),
                 endpoint: Endpoint::OpenAI,
-                adapter: vec![],
                 headers: Some(vec![HeaderEntry {
                     name: "X-Custom-Header".to_string(),
                     value: "custom-value".to_string(),
@@ -452,7 +393,7 @@ mod tests {
         let config = Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         };
 
         let registry = ProviderRegistry::from_config(&config);

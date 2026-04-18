@@ -49,7 +49,7 @@ pub trait Adapter: Send + Sync {
     /// to specify changes to URL and headers.
     async fn transform_request(
         &self,
-        context: RequestContext<'_>,
+        context: RequestContext,
     ) -> Result<RequestTransform, Self::Error>;
 
     /// Transform an incoming response from the LLM provider.
@@ -88,6 +88,13 @@ pub trait Adapter: Send + Sync {
         &self,
         context: StreamChunkContext<'_>,
     ) -> Result<StreamChunkTransform, Self::Error> {
-        Ok(StreamChunkTransform::new(context.chunk))
+        if context.event.is_empty() {
+            Ok(StreamChunkTransform::new(context.chunk))
+        } else {
+            Ok(StreamChunkTransform::new_with_event(
+                context.chunk,
+                context.event,
+            ))
+        }
     }
 }

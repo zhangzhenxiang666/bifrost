@@ -59,7 +59,6 @@ mod tests {
                 base_url: "https://api.test.com".to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::OpenAI,
-                adapter: vec![],
                 headers: None,
                 body: None,
                 models: None,
@@ -73,7 +72,6 @@ mod tests {
                 base_url: "https://api.anthropic.com".to_string(),
                 api_key: "anthropic-key".to_string(),
                 endpoint: Endpoint::Anthropic,
-                adapter: vec![],
                 headers: None,
                 body: None,
                 models: None,
@@ -84,7 +82,7 @@ mod tests {
         Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         }
     }
 

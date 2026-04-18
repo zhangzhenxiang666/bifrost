@@ -3,13 +3,10 @@
 //! This adapter is used when no transformation is needed. It simply passes
 //! the original data through unchanged.
 
-use crate::adapter::{ANTHROPIC_VERSION, Adapter, X_API_KEY};
+use crate::adapter::Adapter;
 use crate::error::LlmMapError;
-use crate::model::{RequestContext, RequestTransform, StreamChunkContext, StreamChunkTransform};
-use crate::types::Endpoint;
-use crate::util;
+use crate::model::{RequestContext, RequestTransform};
 use async_trait::async_trait;
-use http::HeaderMap;
 
 /// Passthrough adapter that does not modify any data.
 ///
@@ -25,57 +22,9 @@ impl Adapter for PassthroughAdapter {
 
     async fn transform_request(
         &self,
-        context: RequestContext<'_>,
+        context: RequestContext,
     ) -> Result<RequestTransform, Self::Error> {
-        let mut request = RequestTransform::new(context.body);
-        let mut headers = HeaderMap::new();
-
-        request.url = Some(util::join_url_paths(
-            &context.provider_config.base_url,
-            util::extract_endpoint(context.uri.path())
-                .ok_or_else(|| LlmMapError::Validation("Invalid endpoint".to_string()))?,
-        ));
-
-        match context.provider_config.endpoint {
-            Endpoint::OpenAI => {
-                headers.insert(
-                    http::header::AUTHORIZATION,
-                    http::header::HeaderValue::from_bytes(
-                        format!("Bearer {}", context.provider_config.api_key).as_bytes(),
-                    )
-                    .unwrap(),
-                );
-            }
-            Endpoint::Anthropic => {
-                headers.insert(
-                    X_API_KEY.clone(),
-                    http::header::HeaderValue::from_bytes(
-                        context.provider_config.api_key.as_bytes(),
-                    )
-                    .unwrap(),
-                );
-                headers.insert(ANTHROPIC_VERSION.0.clone(), ANTHROPIC_VERSION.1.clone());
-                headers.insert(
-                    http::header::USER_AGENT,
-                    "Anthropic/Python 0.84.0".parse().unwrap(),
-                );
-            }
-        };
-        Ok(request.with_headers(headers))
-    }
-
-    async fn transform_stream_chunk(
-        &self,
-        context: StreamChunkContext<'_>,
-    ) -> Result<StreamChunkTransform, Self::Error> {
-        if !context.event.is_empty() {
-            Ok(StreamChunkTransform::new_with_event(
-                context.chunk,
-                context.event,
-            ))
-        } else {
-            Ok(StreamChunkTransform::new(context.chunk))
-        }
+        Ok(RequestTransform::new(context.body))
     }
 }
 
@@ -83,7 +32,6 @@ impl Adapter for PassthroughAdapter {
 mod tests {
     use super::*;
     use crate::model::ResponseContext;
-    use crate::types::ProviderConfig;
     use http::HeaderMap;
 
     #[tokio::test]
@@ -95,30 +43,11 @@ mod tests {
                 {"role": "user", "content": "Hello"}
             ]
         });
-        let config = ProviderConfig {
-            base_url: "https://api.example.com".to_string(),
-            api_key: "sk-test".to_string(),
-            endpoint: crate::types::Endpoint::OpenAI,
-            adapter: vec![],
-            headers: None,
-            body: None,
-            models: None,
-            exclude_headers: None,
-            extend: false,
-        };
-        let headers = HeaderMap::new();
 
-        let uri = http::Uri::from_static("/openai/chat/completions");
-        let ctx = RequestContext::new(&uri, body.clone(), &config, &headers);
+        let ctx = RequestContext::new(body.clone());
         let result = adapter.transform_request(ctx).await.unwrap();
 
         assert_eq!(result.body, body);
-        // Verify URL is set based on endpoint type
-        assert_eq!(
-            result.url,
-            Some("https://api.example.com/chat/completions".to_string())
-        );
-        assert!(result.headers.is_some());
     }
 
     #[tokio::test]

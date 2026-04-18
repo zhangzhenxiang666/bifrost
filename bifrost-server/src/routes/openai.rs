@@ -1,8 +1,8 @@
 //! OpenAI-compatible route for chat completions endpoint
 
-use crate::error::Result;
 use crate::routes::handler;
 use crate::state::AppState;
+use crate::{error::Result, routes::RouteEndpoint};
 use axum::{Json, extract::State};
 use serde_json::Value;
 
@@ -10,7 +10,6 @@ use serde_json::Value;
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response> {
@@ -19,34 +18,21 @@ pub async fn chat_completions(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, headers, body, uri, is_stream).await
+    handler::handle_llm_request(&state, RouteEndpoint::OpenAIChat, headers, body, is_stream).await
 }
 
 #[axum::debug_handler]
 pub async fn chat_completions_v1(
     state: State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     body: Json<Value>,
 ) -> Result<axum::response::Response> {
-    let new_uri = if let Some(pq) = uri.path_and_query() {
-        let path = pq.path();
-        let new_path = path.replacen("/openai/v1", "/openai", 1);
-        let new_pq_str = match pq.query() {
-            Some(query) => format!("{}?{}", new_path, query),
-            None => new_path.to_string(),
-        };
-        new_pq_str.parse().unwrap_or_else(|_| uri.clone())
-    } else {
-        uri
-    };
-    chat_completions(state, new_uri, headers, body).await
+    chat_completions(state, headers, body).await
 }
 
 #[axum::debug_handler]
 pub async fn responses(
     state: State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<axum::response::Response> {
@@ -55,29 +41,23 @@ pub async fn responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    handler::handle_llm_request(&state, headers, body, uri, is_stream).await
+    handler::handle_llm_request(
+        &state,
+        RouteEndpoint::OpenAIResponses,
+        headers,
+        body,
+        is_stream,
+    )
+    .await
 }
 
 #[axum::debug_handler]
 pub async fn responses_v1(
     state: State<AppState>,
-    uri: http::Uri,
     headers: http::header::HeaderMap,
     body: Json<Value>,
 ) -> Result<axum::response::Response> {
-    let new_uri = if let Some(pq) = uri.path_and_query() {
-        let path = pq.path();
-        let new_path = path.replacen("/openai/v1", "/openai", 1);
-        let new_pq_str = match pq.query() {
-            Some(query) => format!("{}?{}", new_path, query),
-            None => new_path.to_string(),
-        };
-        new_pq_str.parse().unwrap_or_else(|_| uri.clone())
-    } else {
-        uri
-    };
-
-    responses(state, new_uri, headers, body).await
+    responses(state, headers, body).await
 }
 
 #[cfg(test)]
@@ -101,7 +81,6 @@ mod tests {
                 base_url: mock_server_uri.to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::OpenAI,
-                adapter: vec![],
                 headers: None,
                 body: None,
                 models: None,
@@ -112,7 +91,7 @@ mod tests {
         Config {
             provider,
             server: crate::types::ServerConfig::default(),
-            endpoint: Default::default(),
+            alias: HashMap::new(),
         }
     }
 

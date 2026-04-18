@@ -1,33 +1,18 @@
 //! Types module for shared data structures
 
-use crate::types::ProviderConfig;
 use http::HeaderMap;
-use http::Uri;
 
 /// Context for request transformation containing all input parameters.
 ///
 /// Adapters can access URI, body, provider config, and headers through this struct.
 /// New fields can be added here in the future without changing existing adapter implementations.
-pub struct RequestContext<'a> {
-    pub uri: &'a Uri,
+pub struct RequestContext {
     pub body: serde_json::Value,
-    pub provider_config: &'a ProviderConfig,
-    pub headers: &'a HeaderMap,
 }
 
-impl<'a> RequestContext<'a> {
-    pub fn new(
-        uri: &'a Uri,
-        body: serde_json::Value,
-        provider_config: &'a ProviderConfig,
-        headers: &'a HeaderMap,
-    ) -> Self {
-        Self {
-            uri,
-            body,
-            provider_config,
-            headers,
-        }
+impl RequestContext {
+    pub fn new(body: serde_json::Value) -> Self {
+        Self { body }
     }
 }
 
@@ -52,46 +37,21 @@ impl<'a> ResponseContext<'a> {
 pub struct StreamChunkContext<'a> {
     pub chunk: serde_json::Value,
     pub event: &'a str,
-    pub provider_config: &'a ProviderConfig,
 }
 
 impl<'a> StreamChunkContext<'a> {
-    pub fn new(
-        chunk: serde_json::Value,
-        event: &'a str,
-        provider_config: &'a ProviderConfig,
-    ) -> Self {
-        Self {
-            chunk,
-            event,
-            provider_config,
-        }
+    pub fn new(chunk: serde_json::Value, event: &'a str) -> Self {
+        Self { chunk, event }
     }
 }
 
 pub struct RequestTransform {
     pub body: serde_json::Value,
-    pub url: Option<String>,
-    pub headers: Option<http::HeaderMap>,
 }
 
 impl RequestTransform {
     pub fn new(body: serde_json::Value) -> Self {
-        Self {
-            body,
-            url: None,
-            headers: None,
-        }
-    }
-
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = Some(url.into());
-        self
-    }
-
-    pub fn with_headers(mut self, headers: http::HeaderMap) -> Self {
-        self.headers = Some(headers);
-        self
+        Self { body }
     }
 }
 

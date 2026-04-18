@@ -60,16 +60,9 @@ pub struct MappingConfig {
 /// Single mapping entry
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
-pub enum MappingEntry {
+pub enum AliasEntry {
     Simple(String),
     Complex(MappingConfig),
-}
-
-/// Endpoint-level configuration
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct EndpointConfig {
-    #[serde(default)]
-    pub mapping: HashMap<String, MappingEntry>,
 }
 
 /// Model-specific configuration
@@ -88,11 +81,6 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key: String,
     pub endpoint: Endpoint,
-    #[serde(
-        default,
-        deserialize_with = "crate::one_or_many::deserialize_one_or_many"
-    )]
-    pub adapter: Vec<String>,
     #[serde(default)]
     pub headers: Option<Vec<HeaderEntry>>,
     #[serde(default)]
@@ -132,7 +120,7 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
-    pub endpoint: HashMap<String, EndpointConfig>,
+    pub alias: HashMap<String, AliasEntry>,
 }
 
 impl Config {
@@ -177,14 +165,5 @@ impl Config {
             }
         }
         Ok(())
-    }
-
-    /// Get all adapter names used in this config
-    pub fn used_adapters(&self) -> Vec<String> {
-        let mut adapters = Vec::new();
-        for provider in self.provider.values() {
-            adapters.extend(provider.adapter.clone());
-        }
-        adapters
     }
 }

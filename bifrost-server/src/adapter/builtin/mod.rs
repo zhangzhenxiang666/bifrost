@@ -3,7 +3,6 @@
 //! This module provides built-in adapter implementations that can be used
 //! out of the box without custom implementation.
 
-// pub mod anthropic_openai;
 pub mod anthropic_to_openai;
 pub mod openai_to_anthropic;
 pub mod passthrough;

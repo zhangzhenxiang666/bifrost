@@ -8,7 +8,6 @@ use crate::model::{
     StreamChunkTransform,
 };
 use async_trait::async_trait;
-use http::HeaderMap;
 
 pub struct OpenAIToAnthropicAdapter {
     stream_processor: AnthropicToOpenAIStreamProcessor,
@@ -34,32 +33,11 @@ impl Adapter for OpenAIToAnthropicAdapter {
 
     async fn transform_request(
         &self,
-        context: RequestContext<'_>,
+        context: RequestContext,
     ) -> Result<RequestTransform, Self::Error> {
         let body = transform_openai_request(context.body)?;
-        let mut headers = HeaderMap::new();
 
-        headers.insert(
-            http::header::AUTHORIZATION,
-            http::header::HeaderValue::from_bytes(
-                format!("Bearer {}", context.provider_config.api_key).as_bytes(),
-            )
-            .unwrap(),
-        );
-
-        // Anthropic requires x-api-key header
-        headers.insert(
-            "x-api-key",
-            http::header::HeaderValue::from_bytes(context.provider_config.api_key.as_bytes())
-                .unwrap(),
-        );
-
-        Ok(RequestTransform::new(body)
-            .with_headers(headers)
-            .with_url(crate::util::join_url_paths(
-                &context.provider_config.base_url,
-                "v1/messages",
-            )))
+        Ok(RequestTransform::new(body))
     }
 
     async fn transform_response(

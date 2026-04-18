@@ -4,7 +4,7 @@ use crate::adapter::chain::OnionExecutor;
 use crate::error::{LlmMapError, Result};
 use crate::model::RequestTransform;
 use crate::state::AppState;
-use crate::types::{Endpoint, MappingEntry};
+use crate::types::AliasEntry;
 use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::routes::{RouteEndpoint, build_request_parts};
 /// Context for processing provider responses
 pub struct RequestContext {
     pub url: String,
@@ -30,15 +31,15 @@ pub struct RequestContext {
 /// This function processes provider configuration in the following priority order (highest to lowest):
 /// 1. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
 /// 2. **Provider-level config**: Merges `provider.body` and `provider.headers`
-/// 3. **Endpoint mapping resolution**: If model not in provider@model format, resolve via endpoint mapping
-///    - Extract target string from MappingEntry (Simple or Complex)
-///    - If Complex mapping with headers/body, merge them into the request
-/// 4. **Adapter transformation**: Executes adapter chain which may modify body/headers
+/// 3. **Alias resolution**: If model not in provider@model format, resolve via alias
+///    - Extract target string from AliasEntry (Simple or Complex)
+///    - If Complex alias with headers/body, merge them into the request
+/// 4. **Internal adapter**: Adapter is dynamically created based on endpoint type (no user config needed)
 pub async fn execute_provider_request(
     state: &AppState,
+    route: RouteEndpoint,
     mut headers: HeaderMap,
     mut body: Value,
-    uri: http::Uri,
 ) -> Result<RequestContext> {
     let model_value = body
         .get("model")
@@ -46,24 +47,16 @@ pub async fn execute_provider_request(
         .map(|s| s.to_string())
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
-    // If model is not in provider@model format, try to resolve via endpoint mapping
-    let (model_target, mapping_extra_headers, mapping_extra_body) = if model_value.contains('@') {
+    // If model is not in provider@model format, try to resolve via global alias
+    let (model_target, alias_extra_headers, alias_extra_body) = if model_value.contains('@') {
         // Direct provider@model format, no mapping needed
         (model_value.as_str(), None, None)
     } else {
-        let route_endpoint = if uri.path().starts_with("/anthropic") {
-            Endpoint::Anthropic
-        } else {
-            Endpoint::OpenAI
-        };
-        let mapping_entry = state
-            .registry
-            .get_endpoint_config(&route_endpoint)
-            .and_then(|cfg| cfg.mapping.get(&model_value));
+        let alias_entry = state.registry.get_alias_entry(&model_value);
 
-        match mapping_entry {
-            Some(MappingEntry::Simple(target)) => (target.as_str(), None, None),
-            Some(MappingEntry::Complex(config)) => {
+        match alias_entry {
+            Some(AliasEntry::Simple(target)) => (target.as_str(), None, None),
+            Some(AliasEntry::Complex(config)) => {
                 // Extract extra headers and body from complex mapping
                 let extra_headers = config.headers.clone();
                 let extra_body = config.body.clone();
@@ -71,8 +64,8 @@ pub async fn execute_provider_request(
             }
             None => {
                 return Err(LlmMapError::Validation(format!(
-                    "Model '{}' not found in endpoint '{}' mapping",
-                    model_value, route_endpoint
+                    "Unknown model '{}'. Expected format: provider@model (e.g., 'openai@gpt-4o')",
+                    model_value
                 )));
             }
         }
@@ -85,42 +78,15 @@ pub async fn execute_provider_request(
         .get(provider_id)
         .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
 
-    // Validate provider endpoint matches the route
-    let route_is_anthropic = uri.path().starts_with("/anthropic");
-    let provider_is_anthropic = provider.endpoint.is_anthropic();
-    if route_is_anthropic != provider_is_anthropic {
-        let (expected, actual) = if route_is_anthropic {
-            ("anthropic", "openai")
-        } else {
-            ("openai", "anthropic")
-        };
-        return Err(LlmMapError::Validation(format!(
-            "Provider '{}' endpoint mismatch: expected '{}', got '{}'",
-            provider_id, expected, actual
-        )));
-    }
-
-    let url = util::join_url_paths(
-        &provider.base_url,
-        util::extract_endpoint(uri.path())
-            .ok_or_else(|| LlmMapError::Validation("Invalid endpoint".to_string()))?,
-    );
-
     // Update model field to use model_name only (without provider prefix)
     // Safety: We just verified model exists
     *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
 
     let mut final_headers = HeaderMap::new();
 
-    let executor = state.registry.build_executor(provider_id)?;
+    let executor = state.registry.build_executor(provider_id, &route)?;
 
-    let RequestTransform {
-        mut body,
-        url: transform_url,
-        headers: transform_headers,
-    } = executor.execute_request(&uri, body, &headers).await?;
-
-    let final_url = transform_url.unwrap_or(url);
+    let RequestTransform { mut body } = executor.execute_request(body).await?;
 
     // If extend=true, inherit the original request headers (after removing excluded ones)
     if provider.extend {
@@ -128,19 +94,15 @@ pub async fn execute_provider_request(
         util::extend_overwrite(&mut final_headers, headers);
     }
 
-    if let Some(hs) = transform_headers {
-        util::extend_overwrite(&mut final_headers, hs);
-    }
-
-    // Merge endpoint mapping extra body fields first (before provider-level)
-    if let Some(extra_body) = mapping_extra_body {
+    // Merge alias extra body fields first (before provider-level)
+    if let Some(extra_body) = alias_extra_body {
         for body_entry in extra_body {
             body[&body_entry.name] = body_entry.value;
         }
     }
 
-    // Merge endpoint mapping extra headers (before provider-level headers)
-    if let Some(extra_headers) = mapping_extra_headers {
+    // Merge alias extra headers (before provider-level headers)
+    if let Some(extra_headers) = alias_extra_headers {
         for header_entry in extra_headers {
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
@@ -190,8 +152,12 @@ pub async fn execute_provider_request(
         }
     }
 
+    let (url, auth_headers) = build_request_parts(provider);
+
+    util::extend_overwrite(&mut final_headers, auth_headers);
+
     Ok(RequestContext {
-        url: final_url,
+        url,
         body,
         headers: final_headers,
         executor,
@@ -234,8 +200,10 @@ pub async fn process_stream_request(
     // Buffer size 32 is enough for real-time streaming without too much memory pressure
     let (tx, rx) = mpsc::channel::<std::result::Result<Event, axum::BoxError>>(32);
 
+    let span = tracing::Span::current();
     // Spawn task to process upstream stream and send events via channel
     tokio::spawn(async move {
+        let _guard = span.enter();
         let mut stream = response.bytes_stream().eventsource();
 
         while let Some(event_result) = stream.next().await {
@@ -357,20 +325,15 @@ pub async fn process_json_request(
 /// Helper function to handle both streaming and non-streaming requests
 pub async fn handle_llm_request(
     state: &AppState,
+    route: RouteEndpoint,
     headers: HeaderMap,
     body: Value,
-    uri: http::Uri,
     is_stream: bool,
 ) -> Result<axum::response::Response> {
-    let ctx = execute_provider_request(state, headers, body, uri).await?;
+    let ctx = execute_provider_request(state, route, headers, body).await?;
 
     let model_name = ctx.body["model"].as_str().unwrap_or("unknown");
-    tracing::info!(
-        target: "upstream",
-        "[Upstream] POST {} | model: {}",
-        ctx.url,
-        model_name
-    );
+    tracing::info!("[Upstream] POST {} | model: {}", ctx.url, model_name);
 
     if is_stream {
         process_stream_request(state, ctx).await

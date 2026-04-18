@@ -7,7 +7,7 @@ port = 5564  # 服务器监听端口
 proxy = "http://127.0.0.1:8080"  # HTTP 代理地址
 timeout_secs = 600  # HTTP 请求超时时间（秒）
 max_retries = 5  # HTTP 请求失败最大重试次数
-retry_backoff_base_ms = 100  # 指数回避基础延迟（毫秒）
+retry_backoff_base_ms = 700  # 指数回避基础延迟（毫秒）
 
 # =============================================================================
 # Provider 配置
@@ -17,7 +17,6 @@ retry_backoff_base_ms = 100  # 指数回避基础延迟（毫秒）
 base_url = "https://api.openai.com/v1"  # 服务提供商的 API 地址
 api_key = "sk-your-key"  # API 密钥
 endpoint = "openai"  # 端点类型，支持 "openai" 或 "anthropic"
-adapter = "passthrough"  # 适配器：passthrough | anthropic_to_openai | anthropic-to-openai
 # Provider 级别的额外请求头（会添加到所有请求）
 headers = [
     { name = "X-Provider-Header", value = "provider-value" },
@@ -33,7 +32,6 @@ body = [
 base_url = "https://api.anthropic.com/v1"
 api_key = "your-key"
 endpoint = "anthropic"
-adapter = "passthrough"
 exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
 extend = true  # 是否继承原始请求的 headers（默认 false，不继承）
 # Provider 级别的额外请求头
@@ -62,32 +60,29 @@ headers = [
     { name = "X-Model-Header", value = "opus-model" }
 ]
 
-# Endpoint 配置 - 模型名称映射
+# Alias 配置 - 模型名称映射
 # =============================================================================
 # 可以配置简短模型名称到 "provider@model" 格式的映射
 # 这样客户端无需记忆完整的 provider 前缀，只需使用简短名称即可路由到对应模型
-# 优先级：provider@model 格式 > endpoint mapping > 报错
-[endpoint.openai.mapping]
+# 优先级：provider@model 格式 > alias > 报错
+[alias]
 "sonnet" = "openai-example@gpt-4o"
 
 # 复杂映射：包含 target（必填）、headers（可选）、body（可选）
-[endpoint.openai.mapping."claude-sonnet"]
+[alias."claude-sonnet"]
 target = "openai@claude-sonnet-4-20250514"
 
-[[endpoint.openai.mapping."claude-sonnet".headers]]
+[[alias."claude-sonnet".headers]]
 name = "X-Custom-Header"
 value = "custom-value"
 
-[[endpoint.openai.mapping."claude-sonnet".body]]
+[[alias."claude-sonnet".body]]
 name = "enable_thinking"
 value = false
 
-[endpoint.anthropic.mapping]
-"sonnet" = "anthropic@claude-sonnet-4-20250514"
-
-[endpoint.anthropic.mapping."claude-opus"]
+[alias."claude-opus"]
 target = "anthropic@claude-opus-4-20250514"
 
-[[endpoint.anthropic.mapping."claude-opus".headers]]
+[[alias."claude-opus".headers]]
 name = "X-Require-Auth"
 value = "true"

@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-server"
-version = "0.1.2"
+version = "0.1.5"
 edition = "2024"
 
 [[bin]]
@@ -30,6 +30,7 @@ daemonize.workspace = true
 dirs.workspace = true
 whoami.workspace = true
 rand.workspace = true
+uuid.workspace = true
 bifrost-config.workspace = true
 
 [dev-dependencies]

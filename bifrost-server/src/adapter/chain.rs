@@ -8,15 +8,12 @@
 
 use std::collections::VecDeque;
 
-use http::HeaderMap;
-
 use crate::adapter::Adapter;
 use crate::error::{LlmMapError, Result};
 use crate::model::{
     RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext,
     StreamChunkTransform,
 };
-use crate::types::ProviderConfig;
 
 /// Executor that manages the adapter chain in an onion architecture.
 ///
@@ -26,57 +23,37 @@ use crate::types::ProviderConfig;
 /// - Response header passthrough (excluding content-length and transfer-encoding)
 pub struct OnionExecutor {
     adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>,
-    provider_config: ProviderConfig,
 }
 
 impl OnionExecutor {
-    /// Create a new executor with the given adapter chain and provider configuration.
+    /// Create a new executor with the given adapter chain.
     ///
     /// # Arguments
     ///
     /// * `adapters` - Vector of adapters to execute in order
-    /// * `provider_config` - The provider configuration (base_url, api_key, headers, body)
     ///
     /// # Example
     ///
     /// ```rust,no_run
     /// use bifrost_server::adapter::Adapter;
     /// use bifrost_server::adapter::chain::OnionExecutor;
-    /// use bifrost_server::types::{Endpoint, ProviderConfig};
     /// use bifrost_server::error::{LlmMapError, Result};
     /// use bifrost_server::model::{RequestContext, RequestTransform, ResponseContext, ResponseTransform, StreamChunkContext, StreamChunkTransform};
     /// # struct MyAdapter;
     /// # #[async_trait::async_trait]
     /// # impl Adapter for MyAdapter {
     /// #     type Error = LlmMapError;
-    /// #     async fn transform_request(&self, ctx: RequestContext<'_>) -> Result<RequestTransform> { Ok(RequestTransform::new(ctx.body)) }
+    /// #     async fn transform_request(&self, ctx: RequestContext) -> Result<RequestTransform> { Ok(RequestTransform::new(ctx.body)) }
     /// #     async fn transform_response(&self, context: ResponseContext<'_>) -> Result<ResponseTransform> { Ok(ResponseTransform::new(context.body)) }
     /// #     async fn transform_stream_chunk(&self, context: StreamChunkContext<'_>) -> Result<StreamChunkTransform> { Ok(StreamChunkTransform::new(context.chunk)) }
     /// # }
-    /// # let provider_config = ProviderConfig {
-    /// #     base_url: "https://api.example.com".to_string(),
-    /// #     api_key: "test-key".to_string(),
-    /// #     endpoint: Endpoint::OpenAI,
-    /// #     adapter: vec![],
-    /// #     headers: None,
-    /// #     body: None,
-    /// #     models: None,
-    /// #     exclude_headers: None,
-    /// #     extend: false,
-    /// # };
     /// let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> = vec![
     ///     Box::new(MyAdapter),
     /// ];
-    /// let executor = OnionExecutor::new(adapters, provider_config);
+    /// let executor = OnionExecutor::new(adapters);
     /// ```
-    pub fn new(
-        adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>,
-        provider_config: ProviderConfig,
-    ) -> Self {
-        Self {
-            adapters,
-            provider_config,
-        }
+    pub fn new(adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>>) -> Self {
+        Self { adapters }
     }
 
     /// Execute the request transformation through the adapter chain.
@@ -99,36 +76,21 @@ impl OnionExecutor {
     /// ```text
     /// Original → Adapter A → Adapter B → Adapter C → Final
     /// ```
-    pub async fn execute_request(
-        &self,
-        uri: &http::Uri,
-        body: serde_json::Value,
-        headers: &http::HeaderMap,
-    ) -> Result<RequestTransform> {
+    pub async fn execute_request(&self, body: serde_json::Value) -> Result<RequestTransform> {
         let mut current_body = body;
-        let mut current_url = self.provider_config.base_url.clone();
-        let mut current_headers = HeaderMap::new();
 
         // Forward execution: A → B → C
         for adapter in &self.adapters {
-            let ctx = RequestContext::new(uri, current_body, &self.provider_config, headers);
+            let ctx = RequestContext::new(current_body);
             let transform = adapter
                 .transform_request(ctx)
                 .await
                 .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
 
             current_body = transform.body;
-            if let Some(new_url) = transform.url {
-                current_url = new_url;
-            }
-            if let Some(new_headers) = transform.headers {
-                crate::util::extend_overwrite(&mut current_headers, new_headers);
-            }
         }
 
-        Ok(RequestTransform::new(current_body)
-            .with_url(current_url)
-            .with_headers(current_headers))
+        Ok(RequestTransform::new(current_body))
     }
 
     /// Execute the response transformation through the adapter chain.
@@ -223,11 +185,7 @@ impl OnionExecutor {
                 let evt_str = evt.as_deref().unwrap_or(event.as_str());
 
                 let results = adapter
-                    .transform_stream_chunk(StreamChunkContext::new(
-                        ck,
-                        evt_str,
-                        &self.provider_config,
-                    ))
+                    .transform_stream_chunk(StreamChunkContext::new(ck, evt_str))
                     .await
                     .map_err(|e| LlmMapError::Adapter(e.to_string()))?;
 
@@ -261,21 +219,6 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    /// Helper function to create a test provider config
-    fn test_provider_config() -> ProviderConfig {
-        ProviderConfig {
-            base_url: "https://example.com".to_string(),
-            api_key: "test-key".to_string(),
-            endpoint: crate::types::Endpoint::OpenAI,
-            adapter: vec![],
-            headers: None,
-            body: None,
-            models: None,
-            exclude_headers: None,
-            extend: false,
-        }
-    }
-
     /// Mock adapter for testing that records execution order
     struct MockAdapter {
         name: &'static str,
@@ -295,7 +238,7 @@ mod tests {
     impl Adapter for MockAdapter {
         type Error = LlmMapError;
 
-        async fn transform_request(&self, ctx: RequestContext<'_>) -> Result<RequestTransform> {
+        async fn transform_request(&self, ctx: RequestContext) -> Result<RequestTransform> {
             self.execution_log
                 .lock()
                 .await
@@ -332,26 +275,10 @@ mod tests {
             Box::new(MockAdapter::new("C", log.clone())),
         ];
 
-        let provider_config = ProviderConfig {
-            base_url: "https://example.com".to_string(),
-            api_key: "test-key".to_string(),
-            endpoint: crate::types::Endpoint::OpenAI,
-            adapter: vec![],
-            headers: None,
-            body: None,
-            models: None,
-            exclude_headers: None,
-            extend: false,
-        };
-        let executor = OnionExecutor::new(adapters, provider_config);
+        let executor = OnionExecutor::new(adapters);
         let body = serde_json::json!({"test": "data"});
-        let headers = http::HeaderMap::new();
-        let uri = http::Uri::from_static("https://openai.com/v1");
 
-        executor
-            .execute_request(&uri, body, &headers)
-            .await
-            .unwrap();
+        executor.execute_request(body).await.unwrap();
 
         let execution_order = log.lock().await;
 
@@ -372,7 +299,7 @@ mod tests {
             Box::new(MockAdapter::new("C", log.clone())),
         ];
 
-        let executor = OnionExecutor::new(adapters, test_provider_config());
+        let executor = OnionExecutor::new(adapters);
         let body = serde_json::json!({"result": "ok"});
         let mut headers = http::HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
@@ -398,7 +325,7 @@ mod tests {
         let adapters: Vec<Box<dyn Adapter<Error = LlmMapError>>> =
             vec![Box::new(MockAdapter::new("A", log.clone()))];
 
-        let executor = OnionExecutor::new(adapters, test_provider_config());
+        let executor = OnionExecutor::new(adapters);
         let body = serde_json::json!({"result": "ok"});
 
         // Create upstream headers with various types
@@ -445,17 +372,12 @@ mod tests {
             Box::new(MockAdapter::new("C", log.clone())),
         ];
 
-        let executor = OnionExecutor::new(adapters, test_provider_config());
+        let executor = OnionExecutor::new(adapters);
 
         // Execute request (forward: A → B → C)
         let request_body = serde_json::json!({"message": "hello"});
-        let request_headers = http::HeaderMap::new();
-        let uri = http::Uri::from_static("https://openai.com/v1");
 
-        executor
-            .execute_request(&uri, request_body, &request_headers)
-            .await
-            .unwrap();
+        executor.execute_request(request_body).await.unwrap();
 
         // Execute response (reverse: C → B → A)
         let response_body = serde_json::json!({"choices": []});
@@ -484,20 +406,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_adapter_chain() {
-        let executor = OnionExecutor::new(vec![], test_provider_config());
+        let executor = OnionExecutor::new(vec![]);
 
         let request_body = serde_json::json!({"test": "data"});
-        let request_headers = http::HeaderMap::new();
-
-        let uri = http::Uri::from_static("https://openai.com/v1");
 
         let result = executor
-            .execute_request(&uri, request_body.clone(), &request_headers)
+            .execute_request(request_body.clone())
             .await
             .unwrap();
 
         assert_eq!(result.body, request_body);
-        assert_eq!(result.url, Some("https://example.com".to_string()));
     }
 
     #[tokio::test]
@@ -509,7 +427,7 @@ mod tests {
             Box::new(MockAdapter::new("B", log.clone())),
         ];
 
-        let executor = OnionExecutor::new(adapters, test_provider_config());
+        let executor = OnionExecutor::new(adapters);
         assert_eq!(executor.adapter_count(), 2);
     }
 }

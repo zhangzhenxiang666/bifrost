@@ -22,7 +22,7 @@ impl Default for RetryConfig {
     fn default() -> Self {
         Self {
             max_retries: 5,
-            backoff_base_ms: 100,
+            backoff_base_ms: 700,
         }
     }
 }
