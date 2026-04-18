@@ -16,3 +16,5 @@ pub use one_or_many::deserialize_one_or_many;
 
 pub mod types;
 pub use types::{AliasEntry, Config, Endpoint, ModelConfig, ProviderConfig, ServerConfig};
+
+pub mod usage;

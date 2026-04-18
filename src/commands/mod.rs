@@ -8,6 +8,7 @@ mod start;
 mod status;
 mod stop;
 mod upgrade;
+pub mod usage;
 pub mod utils;
 
 use clap::Subcommand;
@@ -37,6 +38,9 @@ pub enum Commands {
     /// Upgrade bifrost and bifrost-server to the latest version
     #[command(arg_required_else_help = false)]
     Upgrade,
+
+    /// Show or cleanup usage records
+    Usage(usage::UsageArgs),
 }
 
 /// Handle command dispatch from main.rs
@@ -48,5 +52,6 @@ pub fn handle_command(command: Commands) -> anyhow::Result<()> {
         Commands::Status => status::cmd_status(),
         Commands::List => list::cmd_list(),
         Commands::Upgrade => upgrade::cmd_upgrade(),
+        Commands::Usage(args) => usage::cmd_usage(args),
     }
 }

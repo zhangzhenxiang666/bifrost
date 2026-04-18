@@ -23,6 +23,7 @@ use crate::routes::{
     openai::chat_completions_v1, openai::responses, openai::responses_v1, status::status,
 };
 use crate::state::{AppState, get_global_state, set_global_state};
+use bifrost_config::usage::cleanup_old_usage_files;
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -43,6 +44,8 @@ pub fn run_server(config: Config) -> anyhow::Result<()> {
 async fn server(config: Config) -> anyhow::Result<()> {
     info!("Bifrost service starting...");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
+
+    cleanup_old_usage_files(90);
 
     let port = config.server.port;
     info!("Starting server on port {}", port);

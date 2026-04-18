@@ -8,6 +8,7 @@ use crate::types::AliasEntry;
 use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
+use bifrost_config::Endpoint;
 use eventsource_stream::Eventsource;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
@@ -16,12 +17,20 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::routes::{RouteEndpoint, build_request_parts};
+use bifrost_config::usage::{record_stream_usage, record_usage};
+
 /// Context for processing provider responses
 pub struct RequestContext {
     pub url: String,
     pub body: Value,
     pub headers: HeaderMap,
     pub executor: OnionExecutor,
+    /// Upstream provider endpoint type (openai or anthropic)
+    pub provider_endpoint: Endpoint,
+    /// Provider ID from config
+    pub provider_id: String,
+    /// Model name being called
+    pub model_name: String,
 }
 
 /// Execute a provider request and return the transformed response
@@ -161,7 +170,51 @@ pub async fn execute_provider_request(
         body,
         headers: final_headers,
         executor,
+        provider_endpoint: provider.endpoint.clone(),
+        provider_id: provider_id.to_string(),
+        model_name: model_name.to_string(),
     })
+}
+
+fn try_extract_usage(
+    chunk: &Value,
+    event: &str,
+    endpoint: &Endpoint,
+    prompt_tokens: &mut u32,
+    completion_tokens: &mut u32,
+) {
+    match endpoint {
+        Endpoint::OpenAI => {
+            if let Some(usage) = chunk.get("usage").and_then(|u| u.as_object()) {
+                *prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                *completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+            }
+        }
+        Endpoint::Anthropic => {
+            if event == "message_start"
+                && let Some(msg) = chunk.get("message").and_then(|m| m.as_object())
+                && let Some(usage) = msg.get("usage").and_then(|u| u.as_object())
+            {
+                *prompt_tokens = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+            } else if event == "message_delta"
+                && let Some(usage) = chunk.get("usage").and_then(|u| u.as_object())
+            {
+                *completion_tokens = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+            }
+        }
+    }
 }
 
 /// Process a streaming request and return SSE response
@@ -174,6 +227,9 @@ pub async fn process_stream_request(
         body,
         mut headers,
         executor,
+        provider_endpoint,
+        provider_id,
+        model_name,
     } = ctx;
 
     headers.insert(header::ACCEPT, "text/event-stream".parse().unwrap());
@@ -201,10 +257,13 @@ pub async fn process_stream_request(
     let (tx, rx) = mpsc::channel::<std::result::Result<Event, axum::BoxError>>(32);
 
     let span = tracing::Span::current();
+
     // Spawn task to process upstream stream and send events via channel
     tokio::spawn(async move {
         let _guard = span.enter();
         let mut stream = response.bytes_stream().eventsource();
+        let mut prompt_tokens: u32 = 0;
+        let mut completion_tokens: u32 = 0;
 
         while let Some(event_result) = stream.next().await {
             match event_result {
@@ -217,6 +276,15 @@ pub async fn process_stream_request(
                     // Parse chunk - let adapter handle any format
                     let chunk: Value = serde_json::from_str(&event.data)
                         .unwrap_or_else(|_| json!({"raw": event.data}));
+
+                    // Extract usage
+                    try_extract_usage(
+                        &chunk,
+                        &event.event,
+                        &provider_endpoint,
+                        &mut prompt_tokens,
+                        &mut completion_tokens,
+                    );
 
                     // Transform through adapter chain
                     let transform = executor.execute_stream_chunk(chunk, event.event).await;
@@ -248,6 +316,8 @@ pub async fn process_stream_request(
                 }
             }
         }
+        // Record usage after stream ends
+        record_stream_usage(&provider_id, &model_name, prompt_tokens, completion_tokens);
         // Channel will be closed automatically when tx is dropped
     });
 
@@ -287,7 +357,7 @@ pub async fn process_json_request(
     let response = state
         .registry
         .http_client()
-        .send_request(&ctx.url, ctx.body.clone(), ctx.headers.clone())
+        .send_request(&ctx.url, ctx.body, ctx.headers)
         .await
         .map_err(LlmMapError::Http)?;
     let mut upstream_headers = response.headers().clone();
@@ -307,6 +377,13 @@ pub async fn process_json_request(
         .json()
         .await
         .map_err(|e| LlmMapError::Internal(e.into()))?;
+
+    record_usage(
+        &response_json,
+        &ctx.provider_id,
+        ctx.provider_endpoint.clone(),
+        &ctx.model_name,
+    );
 
     let res = ctx
         .executor
