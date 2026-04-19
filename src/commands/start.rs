@@ -14,8 +14,8 @@ use super::utils::{
     get_stored_pid, is_port_in_use, is_process_running, is_server_running, wait_for_startup_result,
 };
 use crate::config::{
-    BIFROST_DIR, cleanup_old_logs, get_config_path, get_logs_dir, get_today_log_path,
-    init_bifrost_dir,
+    BIFROST_DIR, cleanup_old_logs, cleanup_old_usage_files, get_config_path, get_logs_dir,
+    get_today_log_path, init_bifrost_dir,
 };
 
 pub struct ServerConfig {
@@ -69,6 +69,14 @@ pub fn cmd_start_internal() -> Result<()> {
     let deleted = cleanup_old_logs()?;
     if deleted > 0 {
         print_info("Cleaned up", &format!("{} old log file(s)", deleted));
+    }
+
+    let deleted_usage = cleanup_old_usage_files()?;
+    if deleted_usage > 0 {
+        print_info(
+            "Cleaned up",
+            &format!("{} old usage file(s)", deleted_usage),
+        );
     }
 
     if is_server_running() {

@@ -31,7 +31,7 @@ dirs.workspace = true
 whoami.workspace = true
 rand.workspace = true
 uuid.workspace = true
-bifrost-config.workspace = true
+bifrost-shared.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

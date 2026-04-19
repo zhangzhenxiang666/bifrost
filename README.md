@@ -91,16 +91,28 @@ endpoint = "anthropic"
 
 | 参数 | 简写 | 默认值 | 说明 |
 | ---- | ---- | ------ | ---- |
-| `--date` | | 今天 | 指定日期 (YYYY-MM-DD) |
-| `--from` | | - | 起始日期 (YYYY-MM-DD) |
-| `--to` | | - | 结束日期 (YYYY-MM-DD) |
-| `--time-range` | `-t` | - | 时间范围过滤 (如 12:00-16:00) |
-| `--provider` | `-p` | - | 按 Provider 过滤 (支持 * 通配符) |
-| `--model` | `-m` | - | 按模型过滤 (支持 * 通配符) |
-| `--summary` | `-s` | false | 显示摘要而非详细记录 |
-| `--top` | | - | 显示前 N 条记录 |
-| `--cleanup` | `-c` | false | 清理超过 90 天的使用记录 |
-| `--dry-run` | | false | 预览清理而不删除 |
+| `--date` | - | 今天 | 指定日期 (YYYY-MM-DD)，默认当天 |
+| `--from` | - | - | 起始日期 (YYYY-MM-DD)，与 `--to` 配合使用 |
+| `--to` | - | - | 结束日期 (YYYY-MM-DD)，与 `--from` 配合使用 |
+| `--time-range` | `-t` | - | 时间范围过滤，格式如 `12:00-16:00` |
+| `--provider` | `-p` | - | 按 Provider 过滤，支持 `*` 通配符 |
+| `--model` | `-m` | - | 按模型过滤，支持 `*` 通配符 |
+
+**使用示例：**
+
+```bash
+# 查看当天记录
+bifrost usage
+
+# 查看指定日期记录
+bifrost usage --date 2026-04-01
+
+# 查看日期范围记录
+bifrost usage --from 2026-04-01 --to 2026-04-15
+
+# 组合过滤：查看某 Provider 在特定时间段的记录
+bifrost usage --provider openai* --time-range 09:00-12:00
+```
 
 ## 配置说明
 

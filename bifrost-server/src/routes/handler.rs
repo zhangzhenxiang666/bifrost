@@ -8,7 +8,7 @@ use crate::types::AliasEntry;
 use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
-use bifrost_config::Endpoint;
+use bifrost_shared::Endpoint;
 use eventsource_stream::Eventsource;
 use http::{HeaderMap, header};
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::routes::{RouteEndpoint, build_request_parts};
-use bifrost_config::usage::{record_stream_usage, record_usage};
+use bifrost_shared::usage::{record_stream_usage, record_usage};
 
 /// Context for processing provider responses
 pub struct RequestContext {

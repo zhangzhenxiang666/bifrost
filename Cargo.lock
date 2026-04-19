@@ -212,7 +212,7 @@ name = "bifrost"
 version = "0.1.6"
 dependencies = [
  "anyhow",
- "bifrost-config",
+ "bifrost-shared",
  "chrono",
  "clap",
  "colored",
@@ -231,26 +231,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "bifrost-config"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "bifrost-server"
 version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "bifrost-config",
+ "bifrost-shared",
  "chrono",
  "daemonize",
  "dirs",
@@ -273,6 +260,19 @@ dependencies = [
  "uuid",
  "whoami",
  "wiremock",
+]
+
+[[package]]
+name = "bifrost-shared"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

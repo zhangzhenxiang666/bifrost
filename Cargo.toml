@@ -5,7 +5,7 @@ edition = "2024"
 description = "Bifrost CLI - Management tool for Bifrost server"
 
 [workspace]
-members = ["bifrost-config", "bifrost-server"]
+members = ["bifrost-shared", "bifrost-server"]
 
 [workspace.dependencies]
 # CLI dependencies
@@ -47,8 +47,7 @@ semver = "1.0"
 tar = "0.4"
 flate2 = "1.0"
 
-# Shared config crate
-bifrost-config = { path = "bifrost-config" }
+bifrost-shared = { path = "bifrost-shared" }
 
 # Dev dependencies
 wiremock = "0.6"
@@ -71,7 +70,7 @@ semver.workspace = true
 tar.workspace = true
 flate2.workspace = true
 chrono.workspace = true
-bifrost-config.workspace = true
+bifrost-shared.workspace = true
 
 [profile.release]
 opt-level = "z"

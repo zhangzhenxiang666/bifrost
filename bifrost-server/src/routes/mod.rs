@@ -1,6 +1,6 @@
 //! Routes module for HTTP endpoints
 
-use bifrost_config::{Endpoint, ProviderConfig};
+use bifrost_shared::{Endpoint, ProviderConfig};
 use http::HeaderMap;
 
 use crate::util;

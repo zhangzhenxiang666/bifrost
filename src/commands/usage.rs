@@ -1,14 +1,14 @@
 use anyhow::Result;
-use bifrost_config::usage::{UsageRecord, format_tokens};
+use bifrost_shared::usage::UsageRecord;
 use chrono::{Local, NaiveDate, NaiveTime};
 use clap::Parser;
 use colored::Colorize;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
 
-use super::printing::{print_success, print_warning};
+use super::printing::print_warning;
 
 #[derive(Parser)]
 pub struct UsageArgs {
@@ -35,22 +35,6 @@ pub struct UsageArgs {
     /// Filter by model (supports * wildcard, AND relationship)
     #[arg(short, long)]
     pub model: Option<String>,
-
-    /// Show summary instead of detailed records
-    #[arg(short, long, default_value = "false")]
-    pub summary: bool,
-
-    /// Show top N records by total tokens
-    #[arg(long)]
-    pub top: Option<usize>,
-
-    /// Cleanup usage files older than 90 days
-    #[arg(short, long, default_value = "false")]
-    pub cleanup: bool,
-
-    /// Preview cleanup without deleting
-    #[arg(long, default_value = "false")]
-    pub dry_run: bool,
 }
 
 #[derive(Tabled)]
@@ -74,6 +58,16 @@ fn get_usage_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".bifrost")
         .join("usage")
+}
+
+fn format_tokens(n: u32) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}m", n as f64 / 1_000_000.0)
+    } else if n >= 1000 {
+        format!("{:.2}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn parse_time_range(s: &str) -> Option<(NaiveTime, NaiveTime)> {
@@ -167,58 +161,7 @@ fn read_records_for_range(from: &NaiveDate, to: &NaiveDate) -> Result<Vec<UsageR
     Ok(all_records)
 }
 
-fn cleanup_old_files(keep_days: u32, dry_run: bool) -> Vec<PathBuf> {
-    let dir = get_usage_dir();
-    let cutoff = Local::now().date_naive() - chrono::Duration::days(keep_days as i64);
-    let mut removed = Vec::new();
-
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && name.ends_with(".jsonl")
-            {
-                let date_str = name.trim_end_matches(".jsonl");
-                if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-                    && date < cutoff
-                {
-                    if !dry_run {
-                        let _ = fs::remove_file(&path);
-                    }
-                    removed.push(path);
-                }
-            }
-        }
-    }
-
-    removed
-}
-
 pub fn cmd_usage(args: UsageArgs) -> Result<()> {
-    if args.cleanup {
-        let removed = cleanup_old_files(90, args.dry_run);
-        if removed.is_empty() {
-            println!("No files older than 90 days found.");
-        } else {
-            println!(
-                "{} {} file(s) older than 90 days",
-                if args.dry_run {
-                    "Would remove:"
-                } else {
-                    "Removed:"
-                },
-                removed.len()
-            );
-            for path in &removed {
-                println!("  - {}", path.file_name().unwrap().to_string_lossy());
-            }
-            if !args.dry_run {
-                print_success(&format!("Cleaned up {} file(s)", removed.len()));
-            }
-        }
-        return Ok(());
-    }
-
     let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
 
     let (records, date_label) = if let (Some(from_str), Some(to_str)) = (&args.from, &args.to) {
@@ -272,7 +215,8 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
         type ProviderKey = String;
         type ModelKey = String;
         type StatsVal = (u32, u32, u32);
-        let mut by_slot: BTreeMap<SlotKey, BTreeMap<ProviderKey, BTreeMap<ModelKey, StatsVal>>> = BTreeMap::new();
+        let mut by_slot: BTreeMap<SlotKey, BTreeMap<ProviderKey, BTreeMap<ModelKey, StatsVal>>> =
+            BTreeMap::new();
 
         for r in &filtered {
             let hour: u32 = r.record.time[..2].parse().unwrap_or(0);
@@ -309,10 +253,10 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let mut table = Table::new(&rows);
         {
+            use tabled::settings::Alignment;
+            use tabled::settings::Modify;
             use tabled::settings::object::Cell;
             use tabled::settings::span::RowSpan;
-            use tabled::settings::Modify;
-            use tabled::settings::Alignment;
 
             let mut i = 0;
             while i < rows.len() {
@@ -415,10 +359,10 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let mut table = Table::new(&rows);
         {
+            use tabled::settings::Alignment;
+            use tabled::settings::Modify;
             use tabled::settings::object::Cell;
             use tabled::settings::span::RowSpan;
-            use tabled::settings::Modify;
-            use tabled::settings::Alignment;
 
             let mut i = 0;
             while i < rows.len() {

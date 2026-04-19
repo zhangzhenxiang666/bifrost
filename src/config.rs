@@ -108,6 +108,46 @@ pub fn cleanup_old_logs() -> Result<usize> {
     Ok(deleted_count)
 }
 
+pub fn cleanup_old_usage_files() -> Result<usize> {
+    let usage_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(BIFROST_DIR)
+        .join("usage");
+
+    if !usage_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut deleted_count = 0;
+    let cutoff = Local::now().date_naive() - chrono::Duration::days(90);
+
+    for entry in fs::read_dir(&usage_dir)
+        .context(format!("Failed to read usage directory: {:?}", usage_dir))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+
+        let date_str = name.trim_end_matches(".jsonl");
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            && date < cutoff
+        {
+            fs::remove_file(&path)
+                .context(format!("Failed to remove old usage file: {:?}", path))?;
+            deleted_count += 1;
+        }
+    }
+
+    Ok(deleted_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
