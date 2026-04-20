@@ -188,12 +188,16 @@ impl HttpClient {
                         attempt += 1;
                         let delay =
                             Self::calculate_backoff(attempt, self.retry_config.backoff_base_ms);
+
                         tracing::warn!(
-                            "Request failed with status {}, retrying in {:?} (attempt {}/{})",
-                            status,
-                            delay,
-                            attempt,
-                            self.retry_config.max_retries
+                            msg = %format!(
+                                "Request failed with status {}, retrying in {:?} (attempt {}/{})",
+                                status,
+                                delay,
+                                attempt,
+                                self.retry_config.max_retries
+                            ),
+                            r#type = "send-request"
                         );
                         tokio::time::sleep(delay).await;
                         continue;
@@ -205,12 +209,16 @@ impl HttpClient {
                         attempt += 1;
                         let delay =
                             Self::calculate_backoff(attempt, self.retry_config.backoff_base_ms);
+
                         tracing::warn!(
-                            "Request error: {}, retrying in {:?} (attempt {}/{})",
-                            e,
-                            delay,
-                            attempt,
-                            self.retry_config.max_retries
+                            msg = %format!(
+                                "Request error: {}, retrying in {:?} (attempt {}/{})",
+                                e,
+                                delay,
+                                attempt,
+                                self.retry_config.max_retries
+                            ),
+                            r#type = "send-request"
                         );
                         tokio::time::sleep(delay).await;
                         continue;

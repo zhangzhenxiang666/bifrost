@@ -55,32 +55,40 @@ pub async fn request_logger(
             _ => "HTTP/?.?",
         };
 
-        let log_message = format!(
-            "{}:{} - \"{} {} {}\" {} - {}ms",
-            client_ip.ip(),
-            client_ip.port(),
-            method,
-            request_path,
-            http_version,
-            status_code,
-            duration_ms,
-        );
-
         if !status_code.is_success() {
             let (parts, body) = response.into_parts();
             let body_bytes = match axum::body::to_bytes(body, 8 * 1024).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    error!("Failed to read response body: {}", e);
+                    error!(error = %e, "Failed to read response body");
                     axum::body::Bytes::new()
                 }
             };
             let body_str = String::from_utf8_lossy(&body_bytes);
-            error!("{} - Response body: {}", log_message, body_str.trim());
+            error!(
+                client_ip = %client_ip.ip(),
+                port = client_ip.port(),
+                method = %method,
+                path = %request_path,
+                http_version = %http_version,
+                status = %status_code,
+                duration_ms = %duration_ms,
+                body = %body_str.trim(),
+                r#type = %"loggger-middleware"
+            );
             return Response::from_parts(parts, axum::body::Body::from(body_bytes));
         }
 
-        info!("{}", log_message);
+        info!(
+            client_ip = %client_ip.ip(),
+            port = client_ip.port(),
+            method = %method,
+            path = %request_path,
+            http_version = %http_version,
+            status = %status_code,
+            duration_ms = %duration_ms,
+            r#type = %"loggger-middleware"
+        );
         response
     }
     .instrument(span)

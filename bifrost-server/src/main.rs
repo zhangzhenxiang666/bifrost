@@ -53,7 +53,7 @@ fn run_server() -> anyhow::Result<()> {
                 .with_file(false)
                 .with_ansi(false)
                 .with_timer(tracing_subscriber::fmt::time::ChronoLocal::rfc_3339())
-                .compact()
+                .json()
                 .with_writer(file_appender),
         )
         .with(tracing_subscriber::EnvFilter::new("info"))

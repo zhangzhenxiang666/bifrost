@@ -410,7 +410,7 @@ pub async fn handle_llm_request(
     let ctx = execute_provider_request(state, route, headers, body).await?;
 
     let model_name = ctx.body["model"].as_str().unwrap_or("unknown");
-    tracing::info!("[Upstream] POST {} | model: {}", ctx.url, model_name);
+    tracing::info!(url = %ctx.url, model = %model_name, r#type = "handler");
 
     if is_stream {
         process_stream_request(state, ctx).await

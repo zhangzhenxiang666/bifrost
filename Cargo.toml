@@ -38,7 +38,7 @@ rand = "0.8"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter", "json"] }
 tracing-appender = "0.2"
 daemonize = "0.5"
 dirs = "6.0"
