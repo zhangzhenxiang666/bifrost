@@ -46,6 +46,8 @@ whoami = "1.5"
 semver = "1.0"
 tar = "0.4"
 flate2 = "1.0"
+terminal_size = "0.3"
+unicode-width = "0.1"
 
 bifrost-shared = { path = "bifrost-shared" }
 
@@ -71,6 +73,8 @@ tar.workspace = true
 flate2.workspace = true
 chrono.workspace = true
 bifrost-shared.workspace = true
+terminal_size.workspace = true
+unicode-width.workspace = true
 
 [profile.release]
 opt-level = "z"

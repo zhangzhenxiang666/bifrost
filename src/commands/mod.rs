@@ -2,6 +2,7 @@
 
 mod config_check;
 mod list;
+mod log;
 mod printing;
 mod restart;
 mod start;
@@ -41,6 +42,9 @@ pub enum Commands {
 
     /// Show or cleanup usage records
     Usage(usage::UsageArgs),
+
+    /// Show log records
+    Log(log::LogArgs),
 }
 
 /// Handle command dispatch from main.rs
@@ -53,5 +57,6 @@ pub fn handle_command(command: Commands) -> anyhow::Result<()> {
         Commands::List => list::cmd_list(),
         Commands::Upgrade => upgrade::cmd_upgrade(),
         Commands::Usage(args) => usage::cmd_usage(args),
+        Commands::Log(args) => log::cmd_log(args),
     }
 }
