@@ -85,6 +85,7 @@ endpoint = "anthropic"
 | `bifrost status` | 查看服务器运行状态 |
 | `bifrost list` | 列出所有配置的 Provider |
 | `bifrost usage` | 查看 API 使用记录 |
+| `bifrost log` | 查看和监听日志 |
 | `bifrost upgrade` | 从 GitHub Releases 自动升级到最新版本 |
 
 ### Usage 命令参数
@@ -112,6 +113,32 @@ bifrost usage --from 2026-04-01 --to 2026-04-15
 
 # 组合过滤：查看某 Provider 在特定时间段的记录
 bifrost usage --provider openai* --time-range 09:00-12:00
+```
+
+### Log 命令参数
+
+| 参数 | 简写 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `--date` | - | 今天 | 指定日期 (YYYY-MM-DD)，默认当天 |
+| `--time-range` | `-t` | - | 时间范围过滤，格式如 `12:00-16:00` |
+| `--level` | `-l` | - | 按日志级别过滤，支持 `*` 通配符 |
+| `--lines` | - | 30 | 显示的日志条数 |
+| `--tail` | - | false | 实时监听新日志 |
+
+**使用示例：**
+
+```bash
+# 查看当天日志
+bifrost log
+
+# 查看指定日期的 INFO 级别日志
+bifrost log --date 2026-04-01 --level info
+
+# 实时监听日志
+bifrost log --tail
+
+# 按时间范围过滤
+bifrost log --time-range 09:00-12:00
 ```
 
 ## 配置说明
