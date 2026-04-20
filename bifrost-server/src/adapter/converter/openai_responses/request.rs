@@ -3,6 +3,7 @@
 //! This module provides functions to convert OpenAI Responses API request format
 //! to Chat Completions API compatible format.
 
+use super::super::extract_passthrough_fields;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -90,14 +91,15 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
         result.insert("stream_options".to_string(), transformed);
     }
 
+    extract_passthrough_fields(
+        &mut obj,
+        &mut result,
+        &["model", "stream", "temperature", "top_p", "metadata"],
+    );
+
     for field in [
-        "model",
-        "stream",
-        "temperature",
-        "top_p",
         "parallel_tool_calls",
         "store",
-        "metadata",
         "service_tier",
         "prompt_cache_key",
         "prompt_cache_retention",

@@ -2,6 +2,7 @@
 //!
 //! This module provides functions to convert Anthropic API request format to OpenAI-compatible format.
 
+use super::super::extract_passthrough_fields;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -85,10 +86,18 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
 
     result.insert("messages".to_string(), Value::Array(openai_messages));
 
-    // Move other fields
-    for (key, value) in obj {
-        result.insert(key, value);
-    }
+    extract_passthrough_fields(
+        &mut obj,
+        &mut result,
+        &[
+            "model",
+            "max_tokens",
+            "stream",
+            "metadata",
+            "temperature",
+            "top_p",
+        ],
+    );
 
     Ok(Value::Object(result))
 }

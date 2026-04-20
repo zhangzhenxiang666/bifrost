@@ -1,5 +1,6 @@
 //! Transform OpenAI requests to Anthropic format
 
+use super::super::extract_passthrough_fields;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -12,6 +13,9 @@ pub fn transform_request(body: Value) -> Result<Value, LlmMapError> {
         ));
     };
 
+    // Build final request
+    let mut result = serde_json::Map::new();
+
     if let Some(reasoning_effort) = obj.remove("reasoning_effort") {
         let effort = match reasoning_effort.as_str() {
             Some("low") => "low",
@@ -21,19 +25,19 @@ pub fn transform_request(body: Value) -> Result<Value, LlmMapError> {
             _ => "medium",
         };
         let output_config = json!({ "effort": effort });
-        obj.insert("output_config".to_string(), output_config);
+        result.insert("output_config".to_string(), output_config);
     }
 
     // Transform tools if present
     if let Some(Value::Array(tools_arr)) = obj.remove("tools") {
         let transformed_tools = transform_tools(tools_arr);
-        obj.insert("tools".to_string(), transformed_tools);
+        result.insert("tools".to_string(), transformed_tools);
     }
 
     // Transform tool_choice if present
     if let Some(tool_choice) = obj.remove("tool_choice") {
         let transformed_tool_choice = transform_tool_choice(tool_choice);
-        obj.insert("tool_choice".to_string(), transformed_tool_choice);
+        result.insert("tool_choice".to_string(), transformed_tool_choice);
     }
 
     // Transform messages array
@@ -45,22 +49,40 @@ pub fn transform_request(body: Value) -> Result<Value, LlmMapError> {
 
     // Add system to top level if extracted
     if let Some(system) = system_text {
-        obj.insert("system".to_string(), Value::String(system));
+        result.insert("system".to_string(), Value::String(system));
     }
 
-    obj.insert("messages".to_string(), Value::Array(transformed_messages));
+    result.insert("messages".to_string(), Value::Array(transformed_messages));
 
     if !obj.contains_key("max_tokens") {
         if let Some(max_completion_tokens) = obj.remove("max_completion_tokens") {
-            obj.insert("max_tokens".to_string(), max_completion_tokens);
+            result.insert("max_tokens".to_string(), max_completion_tokens);
         } else {
-            obj.insert("max_tokens".to_string(), Value::Number(4096.into()));
+            result.insert("max_tokens".to_string(), Value::Number(4096.into()));
         }
     } else {
         obj.remove("max_completion_tokens");
     }
 
-    Ok(Value::Object(obj))
+    if let Some(value) = obj.remove("max_tokens") {
+        result.insert("max_tokens".to_string(), value);
+    }
+
+    if let Some(value) = obj.remove("max_completion_tokens") {
+        result.insert("max_tokens".to_string(), value);
+    }
+
+    if !result.contains_key("max_tokens") {
+        result.insert("max_tokens".to_string(), Value::Number(4096.into()));
+    }
+
+    extract_passthrough_fields(
+        &mut obj,
+        &mut result,
+        &["model", "stream", "metadata", "temperature", "top_p"],
+    );
+
+    Ok(Value::Object(result))
 }
 
 fn transform_tools(tools: Vec<Value>) -> Value {
