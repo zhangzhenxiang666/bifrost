@@ -10,9 +10,9 @@ pub fn validate_config() -> Result<(), String> {
     }
 
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-
-    toml::from_str::<bifrost_shared::Config>(&content)
-        .map_err(|e| format!("TOML syntax error: {}", e))?;
+    let config: bifrost_shared::Config =
+        toml::from_str(&content).map_err(|e| format!("TOML syntax error: {}", e))?;
+    config.validate().map_err(|e| e.to_string())?;
 
     Ok(())
 }
