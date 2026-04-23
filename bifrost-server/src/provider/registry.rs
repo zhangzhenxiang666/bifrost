@@ -225,6 +225,7 @@ mod tests {
                 models: None,
                 exclude_headers: None,
                 extend: false,
+                body_policy: None,
             },
         );
 
@@ -235,7 +236,6 @@ mod tests {
         }
     }
 
-    /// Create a test configuration with different endpoint type
     fn create_test_config_with_endpoint() -> Config {
         let mut provider = HashMap::new();
         provider.insert(
@@ -249,6 +249,7 @@ mod tests {
                 models: None,
                 exclude_headers: None,
                 extend: false,
+                body_policy: None,
             },
         );
 
@@ -387,6 +388,7 @@ mod tests {
                 models: None,
                 exclude_headers: None,
                 extend: false,
+                body_policy: None,
             },
         );
 

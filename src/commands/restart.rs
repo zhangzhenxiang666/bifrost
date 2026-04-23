@@ -14,7 +14,7 @@ pub fn cmd_restart() -> Result<()> {
 
     if let Err(e) = validate_config() {
         print_error(&format!("Config validation failed:\n\n{}", e));
-        return Err(anyhow::anyhow!("Config validation failed"));
+        std::process::exit(1);
     }
 
     if is_server_running() {

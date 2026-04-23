@@ -34,6 +34,8 @@ api_key = "your-key"
 endpoint = "anthropic"
 exclude_headers = ["X-Custom-Header"]  # 排除的请求头（仅影响原始请求 headers）
 extend = true  # 是否继承原始请求的 headers（默认 false，不继承）
+# 请求体转换策略：丢弃所有未处理的字段（适合 Anthropic 不接受 unknown field 的场景）
+body_policy = "drop_unknown"
 # Provider 级别的额外请求头
 headers = [
     { name = "X-Anthropic-Provider", value = "bifrost-gateway" }

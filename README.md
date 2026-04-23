@@ -164,7 +164,28 @@ bifrost log --time-range 09:00-12:00
 | `body` | Array | - | | Provider 级别的额外请求体字段，会合并到请求体中 |
 | `exclude_headers` | Array | - | | 排除的请求头（仅影响原始请求 headers） |
 | `extend` | bool | false | | 是否继承原始请求的 headers |
+| `body_policy` | String / Table | - | | 请求体字段转换策略，详见下表 |
 | `models` | Array | - | | 模型特定配置，详见下表 |
+
+#### Body Policy 配置
+
+| 格式 | 说明 |
+| ---- | ---- |
+| `"drop_unknown"` | 丢弃所有未处理的字段 |
+| `{ allowlist = ["field1", "field2"] }` | 仅保留指定字段 |
+| `{ blocklist = ["field1", "field2"] }` | 丢弃指定字段 |
+| 省略 | 保留所有字段（默认） |
+
+```toml
+# 简单字符串：丢弃所有未处理字段
+body_policy = "drop_unknown"
+
+# 仅保留指定字段
+body_policy = { allowlist = ["temperature", "top_p"] }
+
+# 丢弃指定字段
+body_policy = { blocklist = ["prediction", "modalities"] }
+```
 
 #### Provider.models 子配置 `[[provider.<name>.models]]`
 

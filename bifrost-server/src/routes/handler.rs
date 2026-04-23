@@ -17,7 +17,9 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::routes::{RouteEndpoint, build_request_parts};
+use bifrost_shared::types::{BodyTransformPolicy, PROTECTED_BODY_FIELDS};
 use bifrost_shared::usage::{record_stream_usage, record_usage};
+use std::collections::HashSet;
 
 /// Context for processing provider responses
 pub struct RequestContext {
@@ -33,44 +35,32 @@ pub struct RequestContext {
     pub model_name: String,
 }
 
-/// Execute a provider request and return the transformed response
-///
-/// # Provider Configuration Handling
-///
-/// This function processes provider configuration in the following priority order (highest to lowest):
-/// 1. **Model-specific config**: Applies model-specific body/headers from `provider.models` (if matched)
-/// 2. **Provider-level config**: Merges `provider.body` and `provider.headers`
-/// 3. **Alias resolution**: If model not in provider@model format, resolve via alias
-///    - Extract target string from AliasEntry (Simple or Complex)
-///    - If Complex alias with headers/body, merge them into the request
-/// 4. **Internal adapter**: Adapter is dynamically created based on endpoint type (no user config needed)
-pub async fn execute_provider_request(
-    state: &AppState,
-    route: RouteEndpoint,
-    mut headers: HeaderMap,
-    mut body: Value,
-) -> Result<RequestContext> {
+type ModelResolution = (
+    String,
+    String,
+    Option<Vec<crate::types::HeaderEntry>>,
+    Option<Vec<crate::types::BodyEntry>>,
+);
+
+fn resolve_model_target(
+    body: &Value,
+    registry: &crate::provider::registry::ProviderRegistry,
+) -> Result<ModelResolution> {
     let model_value = body
         .get("model")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
-    // If model is not in provider@model format, try to resolve via global alias
     let (model_target, alias_extra_headers, alias_extra_body) = if model_value.contains('@') {
-        // Direct provider@model format, no mapping needed
-        (model_value.as_str(), None, None)
+        (model_value.to_string(), None, None)
     } else {
-        let alias_entry = state.registry.get_alias_entry(&model_value);
-
-        match alias_entry {
-            Some(AliasEntry::Simple(target)) => (target.as_str(), None, None),
-            Some(AliasEntry::Complex(config)) => {
-                // Extract extra headers and body from complex mapping
-                let extra_headers = config.headers.clone();
-                let extra_body = config.body.clone();
-                (config.target.as_str(), extra_headers, extra_body)
-            }
+        match registry.get_alias_entry(model_value) {
+            Some(AliasEntry::Simple(target)) => (target.clone(), None, None),
+            Some(AliasEntry::Complex(config)) => (
+                config.target.clone(),
+                config.headers.clone(),
+                config.body.clone(),
+            ),
             None => {
                 return Err(LlmMapError::Validation(format!(
                     "Unknown model '{}'. Expected format: provider@model (e.g., 'openai@gpt-4o')",
@@ -80,50 +70,50 @@ pub async fn execute_provider_request(
         }
     };
 
-    let (provider_id, model_name) = util::parse_model(model_target)?;
+    let (provider_id, model_name) = util::parse_model(&model_target)?;
+    Ok((
+        provider_id.to_string(),
+        model_name.to_string(),
+        alias_extra_headers,
+        alias_extra_body,
+    ))
+}
 
-    let provider = state
-        .registry
-        .get(provider_id)
-        .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
-
-    // Update model field to use model_name only (without provider prefix)
-    // Safety: We just verified model exists
-    *body.get_mut("model").unwrap() = Value::String(model_name.to_string());
-
-    let mut final_headers = HeaderMap::new();
-
-    let executor = state.registry.build_executor(provider_id, &route)?;
-
-    let RequestTransform { mut body } = executor.execute_request(body).await?;
-
-    // If extend=true, inherit the original request headers (after removing excluded ones)
-    if provider.extend {
-        util::remove_excluded_headers(&mut headers, provider.exclude_headers.as_deref());
-        util::extend_overwrite(&mut final_headers, headers);
-    }
-
-    // Merge alias extra body fields first (before provider-level)
+fn merge_provider_config_into_request(
+    body: &mut Value,
+    headers: &mut HeaderMap,
+    provider: &crate::types::ProviderConfig,
+    alias_extra_headers: Option<Vec<crate::types::HeaderEntry>>,
+    alias_extra_body: Option<Vec<crate::types::BodyEntry>>,
+    model_name: &str,
+    provider_id: &str,
+) -> Result<()> {
     if let Some(extra_body) = alias_extra_body {
         for body_entry in extra_body {
             body[&body_entry.name] = body_entry.value;
         }
     }
 
-    // Merge alias extra headers (before provider-level headers)
     if let Some(extra_headers) = alias_extra_headers {
         for header_entry in extra_headers {
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
             {
-                final_headers.insert(header_name, header_value);
+                headers.insert(header_name, header_value);
             }
         }
     }
 
-    // Merge provider-configured body fields into the request body
     if let Some(provider_body_fields) = provider.body.as_ref() {
         for body_entry in provider_body_fields {
+            if PROTECTED_BODY_FIELDS.contains(&body_entry.name.as_str()) {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    field = %body_entry.name,
+                    "Ignoring protected field in provider body config"
+                );
+                continue;
+            }
             body[&body_entry.name] = body_entry.value.clone();
         }
     }
@@ -133,36 +123,85 @@ pub async fn execute_provider_request(
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
             {
-                final_headers.insert(header_name, header_value);
+                headers.insert(header_name, header_value);
             }
         }
     }
 
-    // Merge model-specific body fields if model is configured in provider.models
     if let Some(models_config) = provider.models.as_ref()
         && let Some(model_cfg) = models_config.iter().find(|m| m.name == model_name)
     {
-        // Merge model-specific body fields
         if let Some(model_body_fields) = model_cfg.body.as_ref() {
             for body_entry in model_body_fields {
+                if PROTECTED_BODY_FIELDS.contains(&body_entry.name.as_str()) {
+                    tracing::warn!(
+                        provider_id = %provider_id,
+                        model = %model_name,
+                        field = %body_entry.name,
+                        "Ignoring protected field in model body config"
+                    );
+                    continue;
+                }
                 body[&body_entry.name] = body_entry.value.clone();
             }
         }
-        // Merge model-specific headers
         if let Some(model_headers) = model_cfg.headers.as_ref() {
             for header_entry in model_headers {
                 if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                     && let Ok(header_value) =
                         header_entry.value.parse::<http::header::HeaderValue>()
                 {
-                    final_headers.insert(header_name, header_value);
+                    headers.insert(header_name, header_value);
                 }
             }
         }
     }
 
-    let (url, auth_headers) = build_request_parts(provider);
+    Ok(())
+}
 
+pub async fn execute_provider_request(
+    state: &AppState,
+    route: RouteEndpoint,
+    mut headers: HeaderMap,
+    mut body: Value,
+) -> Result<RequestContext> {
+    let (provider_id, model_name, alias_extra_headers, alias_extra_body) =
+        resolve_model_target(&body, &state.registry)?;
+
+    let provider = state
+        .registry
+        .get(&provider_id)
+        .ok_or_else(|| LlmMapError::Provider(format!("Provider '{}' not found", provider_id)))?;
+
+    *body.get_mut("model").unwrap() = Value::String(model_name.clone());
+
+    let mut final_headers = HeaderMap::new();
+
+    let executor = state.registry.build_executor(&provider_id, &route)?;
+
+    let RequestTransform { mut body } = executor.execute_request(body).await?;
+
+    if let Some(policy) = provider.body_policy.as_ref() {
+        apply_body_policy_to_value(&mut body, policy);
+    }
+
+    if provider.extend {
+        util::remove_excluded_headers(&mut headers, provider.exclude_headers.as_deref());
+        util::extend_overwrite(&mut final_headers, headers);
+    }
+
+    merge_provider_config_into_request(
+        &mut body,
+        &mut final_headers,
+        provider,
+        alias_extra_headers,
+        alias_extra_body,
+        &model_name,
+        &provider_id,
+    )?;
+
+    let (url, auth_headers) = build_request_parts(provider);
     util::extend_overwrite(&mut final_headers, auth_headers);
 
     Ok(RequestContext {
@@ -171,9 +210,34 @@ pub async fn execute_provider_request(
         headers: final_headers,
         executor,
         provider_endpoint: provider.endpoint.clone(),
-        provider_id: provider_id.to_string(),
-        model_name: model_name.to_string(),
+        provider_id,
+        model_name,
     })
+}
+
+fn apply_body_policy_to_value(body: &mut Value, policy: &BodyTransformPolicy) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+
+    match policy {
+        BodyTransformPolicy::PreserveUnknown => {}
+        BodyTransformPolicy::DropUnknown => {
+            map.retain(|k, _| PROTECTED_BODY_FIELDS.contains(&k.as_str()));
+        }
+        BodyTransformPolicy::Allowlist(fields) => {
+            let allowed: HashSet<_> = PROTECTED_BODY_FIELDS
+                .iter()
+                .copied()
+                .chain(fields.iter().map(|s| s.as_str()))
+                .collect();
+            map.retain(|k, _| allowed.contains(k.as_str()));
+        }
+        BodyTransformPolicy::Blocklist(fields) => {
+            let blocked: HashSet<_> = fields.iter().map(|s| s.as_str()).collect();
+            map.retain(|k, _| !blocked.contains(k.as_str()));
+        }
+    }
 }
 
 fn try_extract_usage(
