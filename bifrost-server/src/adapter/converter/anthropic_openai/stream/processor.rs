@@ -371,7 +371,13 @@ impl OpenAIToAnthropicStreamProcessor {
         let stop_reason = match finish_reason {
             Some("tool_calls") => "tool_use",
             Some("length") => "max_tokens",
-            _ => "end_turn",
+            _ => {
+                if self.state().tool_call_len() > 0 {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                }
+            }
         };
 
         let output_tokens = usage

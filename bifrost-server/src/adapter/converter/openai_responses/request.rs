@@ -3,7 +3,6 @@
 //! This module provides functions to convert OpenAI Responses API request format
 //! to Chat Completions API compatible format.
 
-use super::super::extract_passthrough_fields;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -27,16 +26,10 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
         ));
     };
 
-    let mut result = serde_json::Map::new();
-
-    // Extract instructions and convert to system message (prepend to messages)
     let instructions = obj.remove("instructions");
-
-    // Extract and transform input to messages
     let input = obj.remove("input");
     let mut chat_messages = Vec::new();
 
-    // Prepend instructions as system message if present
     if let Some(instr) = instructions {
         let system_text = extract_text_from_value(instr);
         if !system_text.is_empty() {
@@ -47,71 +40,46 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
         }
     }
 
-    // Process input
     if let Some(input_val) = input {
         let messages = transform_input_to_messages(input_val)?;
         chat_messages.extend(messages);
     }
 
-    result.insert("messages".to_string(), Value::Array(chat_messages));
+    obj.insert("messages".to_string(), Value::Array(chat_messages));
 
-    // Transform tools format: Responses has name/description/parameters at top level,
-    // Chat API nests them inside "function" object
     if let Some(Value::Array(tools)) = obj.remove("tools") {
         let transformed_tools = transform_tools_to_chat_format(tools);
-        result.insert("tools".to_string(), transformed_tools);
+        obj.insert("tools".to_string(), transformed_tools);
     }
 
-    // Transform tool_choice format
     if let Some(tool_choice) = obj.remove("tool_choice") {
         let transformed = transform_tool_choice_to_chat_format(tool_choice);
-        result.insert("tool_choice".to_string(), transformed);
+        obj.insert("tool_choice".to_string(), transformed);
     }
 
-    // Extract and transform reasoning effort
     if let Some(Value::Object(mut reasoning_obj)) = obj.remove("reasoning")
         && let Some(effort) = reasoning_obj.remove("effort")
     {
-        result.insert("reasoning_effort".to_string(), effort);
+        obj.insert("reasoning_effort".to_string(), effort);
     }
 
     if let Some(max_output) = obj.remove("max_output_tokens") {
-        result.insert("max_tokens".to_string(), max_output);
+        obj.insert("max_tokens".to_string(), max_output);
     }
 
     if let Some(Value::Object(text_obj)) = obj.remove("text")
         && let Some(verbosity) = text_obj.get("verbosity")
     {
-        result.insert("verbosity".to_string(), verbosity.clone());
+        obj.insert("verbosity".to_string(), verbosity.clone());
     }
 
     if let Some(stream_options) = obj.remove("stream_options")
         && let Some(transformed) = transform_stream_options(stream_options)
     {
-        result.insert("stream_options".to_string(), transformed);
+        obj.insert("stream_options".to_string(), transformed);
     }
 
-    extract_passthrough_fields(
-        &mut obj,
-        &mut result,
-        &["model", "stream", "temperature", "top_p", "metadata"],
-    );
-
-    for field in [
-        "parallel_tool_calls",
-        "store",
-        "service_tier",
-        "prompt_cache_key",
-        "prompt_cache_retention",
-        "user",
-        "safety_identifier",
-    ] {
-        if let Some(value) = obj.remove(field) {
-            result.insert(field.to_string(), value);
-        }
-    }
-
-    Ok(Value::Object(result))
+    Ok(Value::Object(obj))
 }
 
 // --- Helpers used by multiple transform functions ---
@@ -1238,34 +1206,6 @@ mod tests {
             "temperature": 0.7,
             "top_p": 0.9,
             "parallel_tool_calls": true
-        });
-
-        let result = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_removed_fields() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "store": true,
-            "previous_response_id": "resp_123",
-            "conversation": {"type": "multi"},
-            "include": ["reasoning"],
-            "service_tier": "default",
-            "prompt_cache_key": "cache_abc",
-            "context_management": {"mode": "auto"},
-            "metadata": {"key": "value"}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "store": true,
-            "service_tier": "default",
-            "prompt_cache_key": "cache_abc",
-            "metadata": {"key": "value"}
         });
 
         let result = responses_to_chat_request(input).unwrap();

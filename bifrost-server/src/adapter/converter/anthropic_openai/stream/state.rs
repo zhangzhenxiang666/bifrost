@@ -125,6 +125,10 @@ impl OpenAIToAnthropicStreamState {
         (block_index, true)
     }
 
+    pub fn tool_call_len(&self) -> usize {
+        self.tool_call_blocks.len()
+    }
+
     /// Switch the current active block to `new_index`.
     ///
     /// Returns `Some(old_index)` when there was a different active block that

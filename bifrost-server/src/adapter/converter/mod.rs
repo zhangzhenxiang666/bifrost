@@ -20,16 +20,3 @@ pub fn create_null() -> serde_json::Value {
 pub fn create_null_string() -> serde_json::Value {
     serde_json::Value::String("".into())
 }
-
-/// Moves the specified fields from `obj` into `result` if they exist.
-pub fn extract_passthrough_fields(
-    obj: &mut serde_json::Map<String, serde_json::Value>,
-    result: &mut serde_json::Map<String, serde_json::Value>,
-    fields: &[&str],
-) {
-    for field in fields {
-        if let Some(value) = obj.remove(*field) {
-            result.insert(field.to_string(), value);
-        }
-    }
-}

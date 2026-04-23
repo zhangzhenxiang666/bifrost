@@ -12,12 +12,15 @@ fn get_created_time() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+const FLAG_CURRENT_BLOCK_IS_TOOL: u8 = 0b001;
+const FLAG_TOOL_USE_SENT: u8 = 0b010;
+
 struct AnthropicToOpenAIStreamState {
     id: String,
     model: String,
     input_tokens: u32,
     tool_index: u32,
-    current_block_is_tool: bool,
+    flags: u8,
 }
 
 impl Default for AnthropicToOpenAIStreamState {
@@ -33,7 +36,7 @@ impl AnthropicToOpenAIStreamState {
             model: String::new(),
             input_tokens: 0,
             tool_index: 0,
-            current_block_is_tool: false,
+            flags: 0,
         }
     }
 }
@@ -169,7 +172,9 @@ fn convert_content_block_start(
         && block_type == "tool_use"
     {
         // 标记开始的block是一个tool_use
-        state.current_block_is_tool = true;
+        state.flags |= FLAG_CURRENT_BLOCK_IS_TOOL;
+        // 标记发送过tool_use事件
+        state.flags |= FLAG_TOOL_USE_SENT;
 
         let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -200,9 +205,9 @@ fn convert_content_block_stop(
     state: &mut AnthropicToOpenAIStreamState,
 ) -> Result<StreamChunkTransform, LlmMapError> {
     // 如果结束的是工具块，则 OpenAI 的 tool_index 准备指向下一个
-    if state.current_block_is_tool {
+    if state.flags & FLAG_CURRENT_BLOCK_IS_TOOL != 0 {
         state.tool_index += 1;
-        state.current_block_is_tool = false; // 重置标记
+        state.flags &= !FLAG_CURRENT_BLOCK_IS_TOOL; // 重置标记
     }
 
     Ok(StreamChunkTransform::new_empty())
@@ -277,7 +282,13 @@ fn convert_message_delta(
         .map(|s| match s {
             "tool_use" => "tool_calls",
             "max_tokens" => "length",
-            _ => "stop",
+            _ => {
+                if state.flags & FLAG_TOOL_USE_SENT != 0 {
+                    "tool_calls"
+                } else {
+                    "stop"
+                }
+            }
         })
         .unwrap_or("stop");
 
