@@ -115,33 +115,31 @@ fn convert_assistant_message(mut msg_obj: serde_json::Map<String, Value>) -> Val
 
     let new_content = match parts.len() {
         0 => Value::Null,
-        1 if parts[0]["type"] == "text" => parts.remove(0)["text"].take(),
         _ => Value::Array(parts),
     };
 
     json!({ "role": "assistant", "content": new_content })
 }
 
-fn flush_tool_results(buffer: &mut Vec<Value>, messages: &mut Vec<Value>) {
-    if buffer.is_empty() {
+fn flush_pending_user_blocks(blocks: &mut Vec<Value>, messages: &mut Vec<Value>) {
+    if blocks.is_empty() {
         return;
     }
-    let content = if buffer.len() == 1 {
-        buffer.pop().unwrap()
-    } else {
-        Value::Array(std::mem::take(buffer))
-    };
-    messages.push(json!({ "role": "user", "content": content }));
+
+    messages.push(json!({
+        "role": "user",
+        "content": Value::Array(std::mem::take(blocks))
+    }));
 }
 
 pub fn transform_openai_messages(messages: Vec<Value>) -> (Option<String>, Vec<Value>) {
     let mut result = Vec::with_capacity(messages.len());
     let mut extracted_system = None;
-    let mut tool_results = Vec::new();
+    let mut pending_user_blocks: Vec<Value> = Vec::new();
 
     for msg in messages {
         let Value::Object(mut msg_obj) = msg else {
-            flush_tool_results(&mut tool_results, &mut result);
+            flush_pending_user_blocks(&mut pending_user_blocks, &mut result);
             result.push(msg);
             continue;
         };
@@ -154,6 +152,7 @@ pub fn transform_openai_messages(messages: Vec<Value>) -> (Option<String>, Vec<V
 
         match role.as_str() {
             "system" if extracted_system.is_none() => {
+                flush_pending_user_blocks(&mut pending_user_blocks, &mut result);
                 let content = msg_obj.remove("content").unwrap_or_default();
                 extracted_system = Some(extract_system_text(content));
             }
@@ -161,7 +160,7 @@ pub fn transform_openai_messages(messages: Vec<Value>) -> (Option<String>, Vec<V
             "tool" => {
                 let tool_use_id = msg_obj.remove("tool_call_id").unwrap_or(Value::Null);
                 let content = msg_obj.remove("content").unwrap_or_default();
-                tool_results.push(json!({
+                pending_user_blocks.push(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content
@@ -169,27 +168,31 @@ pub fn transform_openai_messages(messages: Vec<Value>) -> (Option<String>, Vec<V
             }
 
             "user" => {
-                flush_tool_results(&mut tool_results, &mut result);
-                let content = msg_obj.remove("content");
-                result.push(json!({
-                    "role": "user",
-                    "content": convert_user_content(content)
-                }));
+                let content = convert_user_content(msg_obj.remove("content"));
+                match content {
+                    Value::String(s) if !s.is_empty() => {
+                        pending_user_blocks.push(json!({"type": "text", "text": s}));
+                    }
+                    Value::Array(arr) => {
+                        pending_user_blocks.extend(arr);
+                    }
+                    _ => {}
+                }
             }
 
             "assistant" => {
-                flush_tool_results(&mut tool_results, &mut result);
+                flush_pending_user_blocks(&mut pending_user_blocks, &mut result);
                 result.push(convert_assistant_message(msg_obj));
             }
 
             _ => {
-                flush_tool_results(&mut tool_results, &mut result);
+                flush_pending_user_blocks(&mut pending_user_blocks, &mut result);
                 result.push(Value::Object(msg_obj));
             }
         }
     }
 
-    flush_tool_results(&mut tool_results, &mut result);
+    flush_pending_user_blocks(&mut pending_user_blocks, &mut result);
 
     (extracted_system, result)
 }
@@ -205,7 +208,10 @@ mod tests {
         assert!(system.is_none());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["role"], "user");
-        assert_eq!(result[0]["content"], "Hello");
+        let content = result[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Hello");
     }
 
     #[test]
@@ -252,8 +258,9 @@ mod tests {
         assert!(system.is_none());
         assert_eq!(result.len(), 2);
         assert_eq!(result[1]["role"], "user");
-        let content = result[1]["content"].as_object().unwrap();
-        assert_eq!(content["type"], "tool_result");
+        let content = result[1]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_result");
     }
 
     #[test]
@@ -298,7 +305,9 @@ mod tests {
         let input: Vec<Value> = serde_json::from_value(input).unwrap();
 
         let expected = json!([
-            {"role": "user", "content": "What's the weather in Tokyo and can you run ls command?"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "What's the weather in Tokyo and can you run ls command?"}
+            ]},
             {"role": "assistant", "content": [
                 {"type": "text", "text": "I'll check both for you."},
                 {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}},
@@ -308,12 +317,110 @@ mod tests {
                 {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"},
                 {"type": "tool_result", "tool_use_id": "call_2", "content": "total 300\ndrwxr-xr-x  5 user  4096 Apr 17 10:00 ."}
             ]},
-            {"role": "assistant", "content": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."}
+            ]},
             {"role": "user", "content": [
                 {"type": "text", "text": "Thanks! Here's a screenshot of my terminal:"},
                 {"type": "image", "source": {"type": "url", "url": "https://example.com/screenshot.png"}}
             ]},
-            {"role": "assistant", "content": "You're welcome! I can see your terminal screenshot shows the directory listing."}
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "You're welcome! I can see your terminal screenshot shows the directory listing."}
+            ]}
+        ]);
+        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
+
+        let (system, result) = transform_openai_messages(input);
+        assert!(system.is_none());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_consecutive_user_messages_merged() {
+        let input = vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "user", "content": "World"}),
+        ];
+        let expected = json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "World"}
+            ]}
+        ]);
+        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
+
+        let (system, result) = transform_openai_messages(input);
+        assert!(system.is_none());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_consecutive_user_messages_with_array_content_merged() {
+        let input = vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "World"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+            ]}),
+        ];
+        let expected = json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "World"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}}
+            ]}
+        ]);
+        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
+
+        let (system, result) = transform_openai_messages(input);
+        assert!(system.is_none());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_tool_results_and_following_user_messages_merged() {
+        let input = vec![
+            json!({"role": "assistant", "content": "Let me check.", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "Sunny"}),
+            json!({"role": "user", "content": "Thanks!"}),
+            json!({"role": "user", "content": "Continue"}),
+            json!({"role": "user", "content": [{"type": "text", "text": "Continue"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "Continue"}, {"type": "image_url", "image_url": {"url": "https://example.com/cont.png"}}]}),
+        ];
+        let expected = json!([
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"},
+                {"type": "text", "text": "Thanks!"},
+                {"type": "text", "text": "Continue"},
+                {"type": "text", "text": "Continue"},
+                {"type": "text", "text": "Continue"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/cont.png"}}
+            ]}
+        ]);
+        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
+
+        let (system, result) = transform_openai_messages(input);
+        assert!(system.is_none());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_non_consecutive_user_messages_not_merged() {
+        let input = vec![
+            json!({"role": "user", "content": "First"}),
+            json!({"role": "assistant", "content": "Reply"}),
+            json!({"role": "user", "content": "Second"}),
+        ];
+        let expected = json!([
+            {"role": "user", "content": [{"type": "text", "text": "First"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Reply"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Second"}]}
         ]);
         let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
 

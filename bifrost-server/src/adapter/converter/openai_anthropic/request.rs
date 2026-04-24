@@ -137,7 +137,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "max_tokens": 4096
         });
 
@@ -158,7 +158,7 @@ mod tests {
         let expected = json!({
             "model": "gpt-4o",
             "system": "You are helpful.",
-            "messages": [{"role": "user", "content": "Hi"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
             "max_tokens": 4096
         });
 
@@ -214,7 +214,7 @@ mod tests {
                     {"type": "text", "text": "Checking..."},
                     {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
                 ]},
-                {"role": "user", "content": {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"}}
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"}]}
             ],
             "max_tokens": 4096
         });
@@ -292,7 +292,7 @@ mod tests {
         let expected = json!({
             "model": "gpt-4o",
             "messages": [
-                {"role": "user", "content": "What's the weather in Tokyo and can you run ls command?"},
+                {"role": "user", "content": [{"type": "text", "text": "What's the weather in Tokyo and can you run ls command?"}]},
                 {"role": "assistant", "content": [
                     {"type": "text", "text": "I'll check both for you."},
                     {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}},
@@ -302,9 +302,9 @@ mod tests {
                     {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"},
                     {"type": "tool_result", "tool_use_id": "call_2", "content": "total 300\ndrwxr-xr-x  5 user  4096 Apr 17 10:00 ."}
                 ]},
-                {"role": "assistant", "content": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."},
-                {"role": "user", "content": "Thanks!"},
-                {"role": "assistant", "content": "You're welcome!"}
+                {"role": "assistant", "content": [{"type": "text", "text": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."}]},
+                {"role": "user", "content": [{"type": "text", "text": "Thanks!"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "You're welcome!"}]}
             ],
             "tools": [{
                 "name": "get_weather",
@@ -340,7 +340,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "tools": [{
                 "name": "get_weather",
                 "description": "Get weather for a city",
@@ -363,7 +363,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "tool_choice": {"type": "any"},
             "max_tokens": 4096
         });
@@ -382,7 +382,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "tool_choice": {"type": "none"},
             "max_tokens": 4096
         });
@@ -401,7 +401,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "tool_choice": {"type": "tool", "name": "get_weather"},
             "max_tokens": 4096
         });
@@ -435,7 +435,7 @@ mod tests {
 
             let expected = json!({
                 "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "Hello"}],
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
                 "output_config": {"effort": expected_effort},
                 "max_tokens": 4096
             });
@@ -455,7 +455,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "max_tokens": 2048
         });
 
@@ -474,7 +474,7 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "max_tokens": 1024
         });
 

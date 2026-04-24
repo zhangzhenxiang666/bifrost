@@ -263,8 +263,8 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
     }
 
     let display_count = args.lines.min(filtered.len());
-    let display_slice: Vec<&LogRecord> = if args.tail {
-        filtered.clone()
+    let mut display_slice: Vec<&LogRecord> = if args.tail {
+        filtered
     } else {
         filtered[filtered.len() - display_count..].to_vec()
     };
@@ -273,75 +273,95 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
         return cmd_log_tail(date_naive, time_range, args.level.clone());
     }
 
-    let mut request_order: Vec<Option<String>> = Vec::new();
-    let mut by_request: BTreeMap<Option<String>, BTreeMap<String, Vec<usize>>> = BTreeMap::new();
-
-    for (idx, record) in display_slice.iter().enumerate() {
-        let request_id = record.get_request_id().map(String::from);
-
-        if !by_request.contains_key(&request_id) {
-            request_order.push(request_id.clone());
+    display_slice.sort_by(|a, b| {
+        match (
+            chrono::DateTime::parse_from_rfc3339(&a.timestamp),
+            chrono::DateTime::parse_from_rfc3339(&b.timestamp),
+        ) {
+            (Ok(ta), Ok(tb)) => ta.cmp(&tb),
+            _ => a.timestamp.cmp(&b.timestamp),
         }
+    });
 
-        by_request
-            .entry(request_id)
-            .or_default()
-            .entry(record.level.clone())
-            .or_default()
-            .push(idx);
+    let mut request_groups: BTreeMap<String, Vec<&LogRecord>> = BTreeMap::new();
+    for record in &display_slice {
+        if let Some(req_id) = record.get_request_id() {
+            request_groups
+                .entry(req_id.to_string())
+                .or_default()
+                .push(record);
+        }
     }
+
+    let mut processed_requests: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     let mut rows: Vec<LogRow> = Vec::new();
     let mut spans: Vec<SpanInfo2> = Vec::new();
     let mut current_pos = 0;
 
-    for request_id in &request_order {
-        let level_groups = match by_request.get(request_id) {
-            Some(g) => g,
+    for record in display_slice {
+        let req_id = record.get_request_id();
+
+        if req_id.is_none() {
+            rows.push(LogRow {
+                time: record.timestamp[11..19].to_string(),
+                level: record.level.clone(),
+                message: format_message(&record.level, &record.fields),
+            });
+            spans.push(SpanInfo2 {
+                start: current_pos,
+                span: 1,
+            });
+            current_pos += 1;
+            continue;
+        }
+
+        let req_id_str = req_id.unwrap();
+        if processed_requests.contains(req_id_str) {
+            continue;
+        }
+        processed_requests.insert(req_id_str.to_string());
+
+        let records = match request_groups.get(req_id_str) {
+            Some(r) => r,
             None => continue,
         };
 
-        if request_id.is_none() {
-            for level_indices in level_groups.values() {
-                for &idx in level_indices {
-                    let record = display_slice[idx];
-                    rows.push(LogRow {
-                        time: record.timestamp[11..19].to_string(),
-                        level: record.level.clone(),
-                        message: format_message(&record.level, &record.fields),
-                    });
-                    spans.push(SpanInfo2 {
-                        start: current_pos,
-                        span: 1,
-                    });
-                    current_pos += 1;
-                }
-            }
-        } else {
-            for level_indices in level_groups.values() {
-                let span = level_indices.len();
-                for (i, &idx) in level_indices.iter().enumerate() {
-                    let record = display_slice[idx];
-                    rows.push(LogRow {
-                        time: if i == 0 {
-                            record.timestamp[11..16].to_string()
-                        } else {
-                            String::new()
-                        },
-                        level: if i == 0 {
-                            record.level.clone()
-                        } else {
-                            String::new()
-                        },
-                        message: format_message(&record.level, &record.fields),
-                    });
-                }
-                spans.push(SpanInfo2 {
-                    start: current_pos,
-                    span,
+        let mut by_level: BTreeMap<String, Vec<&LogRecord>> = BTreeMap::new();
+        for record in records {
+            by_level
+                .entry(record.level.clone())
+                .or_default()
+                .push(record);
+        }
+
+        for level_records in by_level.values() {
+            let first_time = level_records
+                .first()
+                .map(|r| r.timestamp[11..19].to_string())
+                .unwrap_or_default();
+            let span = level_records.len();
+            for (i, record) in level_records.iter().enumerate() {
+                rows.push(LogRow {
+                    time: if i == 0 {
+                        first_time.clone()
+                    } else {
+                        String::new()
+                    },
+                    level: if i == 0 {
+                        record.level.clone()
+                    } else {
+                        String::new()
+                    },
+                    message: format_message(&record.level, &record.fields),
                 });
-                current_pos += span;
             }
+            spans.push(SpanInfo2 {
+                start: current_pos,
+                span,
+            });
+            current_pos += span;
         }
     }
 
