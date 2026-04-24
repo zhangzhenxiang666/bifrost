@@ -35,8 +35,6 @@ pub fn anthropic_to_openai_request(body: Value) -> Result<Value, LlmMapError> {
         })
     });
 
-    obj.remove("thinking");
-
     if let Some(Value::Object(mut output_config)) = obj.remove("output_config")
         && let Some(effort) = output_config.remove("effort")
         && let Some(effort_str) = effort.as_str()
@@ -546,7 +544,7 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_thinking_field_removed() {
+    fn test_thinking_field_preserved() {
         let input = json!({
             "model": "claude-sonnet-4-20250514",
             "messages": [{"role": "user", "content": "test"}],
@@ -555,7 +553,26 @@ mod tests {
 
         let expected = json!({
             "model": "claude-sonnet-4-20250514",
-            "messages": [{"role": "user", "content": "test"}]
+            "messages": [{"role": "user", "content": "test"}],
+            "thinking": {"type": "enabled", "budget_tokens": 1000}
+        });
+
+        let result = anthropic_to_openai_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_thinking_disabled_preserved() {
+        let input = json!({
+            "model": "kimi-k2.6",
+            "messages": [{"role": "user", "content": "test"}],
+            "thinking": {"type": "disabled"}
+        });
+
+        let expected = json!({
+            "model": "kimi-k2.6",
+            "messages": [{"role": "user", "content": "test"}],
+            "thinking": {"type": "disabled"}
         });
 
         let result = anthropic_to_openai_request(input).unwrap();

@@ -108,7 +108,7 @@ pub fn create_sse_stream(
     let boxed: BoxedEventStream = Box::pin(stream);
 
     // Create Sse with KeepAlive for immediate flushing
-    Sse::new(boxed).keep_alive(KeepAlive::new().interval(Duration::from_millis(50)))
+    Sse::new(boxed).keep_alive(KeepAlive::new().interval(Duration::from_millis(100)))
 }
 
 #[cfg(test)]

@@ -3,15 +3,16 @@
 use crate::adapter::chain::OnionExecutor;
 use crate::error::{LlmMapError, Result};
 use crate::model::RequestTransform;
+use crate::sse::IntoSseStream;
 use crate::state::AppState;
 use crate::types::AliasEntry;
 use crate::util;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use bifrost_shared::Endpoint;
-use eventsource_stream::Eventsource;
 use http::{HeaderMap, header};
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -317,31 +318,35 @@ pub async fn process_stream_request(
     }
 
     // Create channel for real-time streaming
-    // Buffer size 32 is enough for real-time streaming without too much memory pressure
-    let (tx, rx) = mpsc::channel::<std::result::Result<Event, axum::BoxError>>(32);
+    let (tx, rx) = mpsc::channel::<std::result::Result<Event, axum::BoxError>>(256);
 
     let span = tracing::Span::current();
 
     // Spawn task to process upstream stream and send events via channel
     tokio::spawn(async move {
         let _guard = span.enter();
-        let mut stream = response.bytes_stream().eventsource();
+        let mut stream = Box::pin(
+            response
+                .bytes_stream()
+                .into_sse_stream()
+                .timeout(Duration::from_secs(60)),
+        );
         let mut prompt_tokens: u32 = 0;
         let mut completion_tokens: u32 = 0;
 
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    // Skip [DONE] sentinel - standard OpenAI format to end stream
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(Ok(event)) => {
                     if event.data.starts_with("[DONE]") {
-                        continue;
+                        break;
                     }
 
-                    // Parse chunk - let adapter handle any format
-                    let chunk: Value = serde_json::from_str(&event.data)
-                        .unwrap_or_else(|_| json!({"raw": event.data}));
+                    let chunk: Value = if let Ok(data) = serde_json::from_str(&event.data) {
+                        data
+                    } else {
+                        continue;
+                    };
 
-                    // Extract usage
                     try_extract_usage(
                         &chunk,
                         &event.event,
@@ -350,33 +355,32 @@ pub async fn process_stream_request(
                         &mut completion_tokens,
                     );
 
-                    // Transform through adapter chain
                     let transform = executor.execute_stream_chunk(chunk, event.event).await;
 
-                    // If transformation failed, skip this chunk (don't send error to client)
                     let Ok(transform) = transform else {
                         continue;
                     };
 
-                    // Convert all events to SSE events and send immediately
                     for (data, event_name) in transform.events {
                         let data_str =
                             serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
                         let mut sse_event = Event::default();
-                        // Set event name first, then data - ensures event: comes before data: in SSE output
                         if let Some(name) = event_name {
                             sse_event = sse_event.event(name);
                         }
                         sse_event = sse_event.data(data_str);
-                        // Send event - if receiver is dropped, stop processing
                         if tx.send(Ok(sse_event)).await.is_err() {
                             break;
                         }
                     }
                 }
-                Err(_err) => {
-                    // Skip parse errors, continue processing
+                Ok(Err(err)) => {
+                    tracing::warn!(msg = %err, r#type = "sse-parser");
                     continue;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!("SSE stream timed out after 60s");
+                    break;
                 }
             }
         }

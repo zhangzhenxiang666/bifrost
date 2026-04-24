@@ -1,6 +1,6 @@
 [package]
 name = "bifrost"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 description = "Bifrost CLI - Management tool for Bifrost server"
 
@@ -24,13 +24,14 @@ urlencoding = "2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 toml = "0.8"
-tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread"] }
-tokio-stream = "0.1.18"
+tokio = { version = "1.52.1", features = ["rt", "rt-multi-thread"] }
+tokio-stream = { version = "0.1.18", features = ["time"] }
 futures = "0.3"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 async-trait = "0.1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
-eventsource-stream = "0.2.3"
+bytes = "1"
+pin-project-lite = "0.2"
 thiserror = "2.0"
 rand = "0.8"
 

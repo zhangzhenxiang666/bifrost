@@ -9,6 +9,7 @@ pub mod middleware;
 pub mod model;
 pub mod provider;
 pub mod routes;
+pub mod sse;
 pub mod state;
 pub mod util;
 

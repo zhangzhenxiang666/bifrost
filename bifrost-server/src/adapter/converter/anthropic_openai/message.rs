@@ -74,13 +74,18 @@ pub fn transform_message_anthropic_to_openai(msg: Value) -> Vec<Value> {
             _ => vec![],
         };
 
-        let (transformed_content, tool_calls) =
+        let (transformed_content, tool_calls, reasoning_content) =
             transform_assistant_content_with_tool_use(content_array);
         obj.insert("content".into(), transformed_content);
 
         if !tool_calls.is_empty() {
             obj.insert("tool_calls".into(), Value::Array(tool_calls));
         }
+
+        if let Some(reasoning) = reasoning_content {
+            obj.insert("reasoning_content".into(), Value::String(reasoning));
+        }
+
         return vec![Value::Object(obj)];
     }
 
@@ -156,10 +161,12 @@ pub fn extract_tool_results_from_user_message(blocks: Vec<Value>) -> (Value, Vec
 }
 
 /// Transform assistant content with tool_use blocks
-/// Returns (text_content, tool_calls)
-pub fn transform_assistant_content_with_tool_use(blocks: Vec<Value>) -> (Value, Vec<Value>) {
+pub fn transform_assistant_content_with_tool_use(
+    blocks: Vec<Value>,
+) -> (Value, Vec<Value>, Option<String>) {
     let mut text_parts: Vec<Value> = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut reasoning_content: Option<String> = None;
 
     for block in blocks {
         let Value::Object(mut obj) = block else {
@@ -189,6 +196,13 @@ pub fn transform_assistant_content_with_tool_use(blocks: Vec<Value>) -> (Value, 
                     }
                 }));
             }
+            Some("thinking") => {
+                if let Some(thinking) = obj.get("thinking").and_then(|v| v.as_str())
+                    && reasoning_content.is_none()
+                {
+                    reasoning_content = Some(thinking.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -208,7 +222,7 @@ pub fn transform_assistant_content_with_tool_use(blocks: Vec<Value>) -> (Value, 
         Value::Array(text_parts)
     };
 
-    (content, tool_calls)
+    (content, tool_calls, reasoning_content)
 }
 
 /// Transform an Anthropic image block to OpenAI image_url format.
@@ -488,6 +502,43 @@ mod tests {
     }
 
     #[test]
+    fn test_transform_assistant_message_with_thinking() {
+        let input = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Let me analyze this."},
+                {"type": "text", "text": "The answer is 42."}
+            ]
+        });
+        let result = transform_message_anthropic_to_openai(input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert_eq!(result[0]["content"], "The answer is 42.");
+        assert_eq!(result[0]["reasoning_content"], "Let me analyze this.");
+    }
+
+    #[test]
+    fn test_transform_assistant_message_with_thinking_and_tool_use() {
+        let input = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "I need to check the weather."},
+                {"type": "text", "text": "Let me search."},
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
+            ]
+        });
+        let result = transform_message_anthropic_to_openai(input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert_eq!(result[0]["content"], "Let me search.");
+        assert!(result[0]["tool_calls"].is_array());
+        assert_eq!(
+            result[0]["reasoning_content"],
+            "I need to check the weather."
+        );
+    }
+
+    #[test]
     fn test_transform_non_object_message() {
         let input = json!("just a string");
         let result = transform_message_anthropic_to_openai(input);
@@ -552,7 +603,7 @@ mod tests {
     #[test]
     fn test_transform_assistant_content_text_only() {
         let input = vec![json!({"type": "text", "text": "Hello world"})];
-        let (content, tool_calls) = transform_assistant_content_with_tool_use(input);
+        let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
         assert_eq!(content, "Hello world");
         assert!(tool_calls.is_empty());
     }
@@ -562,7 +613,7 @@ mod tests {
         let input = vec![
             json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
         ];
-        let (content, tool_calls) = transform_assistant_content_with_tool_use(input);
+        let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
         assert_eq!(content, "");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0]["id"], "call_1");
@@ -576,9 +627,54 @@ mod tests {
             json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}),
             json!({"type": "text", "text": "Let me check."}),
         ];
-        let (content, tool_calls) = transform_assistant_content_with_tool_use(input);
+        let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
         assert!(content.as_array().is_some());
         assert_eq!(tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_transform_assistant_content_with_thinking() {
+        let input = vec![
+            json!({"type": "thinking", "thinking": "Let me think about this..."}),
+            json!({"type": "text", "text": "The answer is 42."}),
+        ];
+        let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
+        assert_eq!(content, "The answer is 42.");
+        assert!(tool_calls.is_empty());
+        assert_eq!(reasoning, Some("Let me think about this...".to_string()));
+    }
+
+    #[test]
+    fn test_transform_assistant_content_thinking_and_tool_use() {
+        let input = vec![
+            json!({"type": "thinking", "thinking": "I need to check the weather."}),
+            json!({"type": "text", "text": "Let me search."}),
+            json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
+        ];
+        let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
+        assert_eq!(content, "Let me search.");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(reasoning, Some("I need to check the weather.".to_string()));
+    }
+
+    #[test]
+    fn test_transform_assistant_content_only_thinking() {
+        let input = vec![json!({"type": "thinking", "thinking": "Just thinking..."})];
+        let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
+        assert_eq!(content, "");
+        assert!(tool_calls.is_empty());
+        assert_eq!(reasoning, Some("Just thinking...".to_string()));
+    }
+
+    #[test]
+    fn test_transform_assistant_content_multiple_thinking_uses_first() {
+        let input = vec![
+            json!({"type": "thinking", "thinking": "First thought."}),
+            json!({"type": "thinking", "thinking": "Second thought."}),
+            json!({"type": "text", "text": "Result."}),
+        ];
+        let (_, _, reasoning) = transform_assistant_content_with_tool_use(input);
+        assert_eq!(reasoning, Some("First thought.".to_string()));
     }
 
     // ============================================
