@@ -4,7 +4,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
 
@@ -127,6 +127,8 @@ fn matches_filters(
     true
 }
 
+const MAX_RECORDS: usize = 10_000;
+
 fn read_logs_for_date(date: &NaiveDate) -> Result<Vec<LogRecord>> {
     let dir = get_log_dir();
     let date_str = date.format("%Y-%m-%d").to_string();
@@ -137,19 +139,51 @@ fn read_logs_for_date(date: &NaiveDate) -> Result<Vec<LogRecord>> {
     }
 
     let file = File::open(&path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+    let file_len = reader.seek(std::io::SeekFrom::End(0))?;
+    let mut pos = file_len;
     let mut records = Vec::new();
+    let mut buffer = Vec::new();
 
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('{') {
-            continue;
-        }
-        if let Ok(record) = serde_json::from_str::<LogRecord>(&line) {
-            records.push(record);
+    while pos > 0 && records.len() < MAX_RECORDS {
+        let chunk_size = std::cmp::min(4096, pos);
+        pos -= chunk_size;
+        reader.seek(std::io::SeekFrom::Start(pos))?;
+        let mut chunk = vec![0u8; chunk_size as usize];
+        reader.read_exact(&mut chunk)?;
+
+        let mut new_buffer = chunk;
+        new_buffer.append(&mut buffer);
+        buffer = new_buffer;
+
+        while let Some(newline_pos) = buffer.iter().rposition(|&b| b == b'\n') {
+            let line_bytes = &buffer[newline_pos + 1..];
+            if !line_bytes.is_empty()
+                && let Ok(line) = String::from_utf8(line_bytes.to_vec())
+                && let trimmed = line.trim()
+                && trimmed.starts_with('{')
+                && let Ok(record) = serde_json::from_str::<LogRecord>(&line)
+            {
+                records.push(record);
+                if records.len() >= MAX_RECORDS {
+                    break;
+                }
+            }
+            buffer.truncate(newline_pos);
         }
     }
 
+    if records.len() < MAX_RECORDS
+        && !buffer.is_empty()
+        && let Ok(line) = String::from_utf8(buffer)
+        && let trimmed = line.trim()
+        && trimmed.starts_with('{')
+        && let Ok(record) = serde_json::from_str::<LogRecord>(&line)
+    {
+        records.push(record);
+    }
+
+    records.reverse();
     Ok(records)
 }
 
@@ -198,8 +232,10 @@ fn format_message(level: &str, fields: &serde_json::Value) -> String {
     if let Some(msg) = fields.get("msg").and_then(|v| v.as_str()) {
         return msg.to_string();
     }
+
     let log_type = fields.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    match log_type {
+    let mut processed_keys: Vec<&str> = vec!["type", "message", "msg"];
+    let base = match log_type {
         "loggger-middleware" => {
             let client_ip = fields
                 .get("client_ip")
@@ -213,36 +249,51 @@ fn format_message(level: &str, fields: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("-");
             let body = fields.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            processed_keys.extend(&["client_ip", "port", "path", "status", "duration_ms", "body"]);
             if level == "ERROR" && !body.is_empty() {
-                return format!(
+                format!(
                     "{}:{} {} {} ({}ms) | {}",
                     client_ip, port, path, status, duration, body
-                );
+                )
+            } else {
+                format!(
+                    "{}:{} {} {} ({}ms)",
+                    client_ip, port, path, status, duration
+                )
             }
-            format!(
-                "{}:{} {} {} ({}ms)",
-                client_ip, port, path, status, duration
-            )
         }
         "handler" => {
             let url = fields.get("url").and_then(|v| v.as_str()).unwrap_or("-");
             let model = fields.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            processed_keys.extend(&["url", "model"]);
             if !model.is_empty() {
-                return format!("→ {} [{}]", url, model);
+                format!("→ {} [{}]", url, model)
+            } else {
+                format!("→ {}", url)
             }
-            format!("→ {}", url)
         }
         "send-request" => {
             let msg = fields.get("msg").and_then(|v| v.as_str()).unwrap_or("-");
+            processed_keys.push("msg");
             msg.to_string()
         }
         _ => serde_json::to_string(fields).unwrap_or_default(),
+    };
+
+    if let Some(obj) = fields.as_object() {
+        let remaining: Vec<String> = obj
+            .iter()
+            .filter(|(k, _)| !processed_keys.contains(&k.as_str()))
+            .map(|(k, v)| format!("{} = {}", k, v))
+            .collect();
+        if !remaining.is_empty() {
+            return format!("{} | {}", base, remaining.join(", "));
+        }
     }
+    base
 }
 
 pub fn cmd_log(args: LogArgs) -> Result<()> {
-    let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
-
     let date = args
         .date
         .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
@@ -250,7 +301,16 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
     let date_naive =
         NaiveDate::parse_from_str(&date, "%Y-%m-%d").unwrap_or_else(|_| Local::now().date_naive());
 
+    if args.tail {
+        let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
+        return cmd_log_tail(date_naive, time_range, args.level.clone());
+    }
+
+    let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
+    let has_filters = args.level.is_some() || args.time_range.is_some();
+
     let records = read_logs_for_date(&date_naive)?;
+    let is_truncated = records.len() >= MAX_RECORDS;
 
     let filtered: Vec<&LogRecord> = records
         .iter()
@@ -263,15 +323,7 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
     }
 
     let display_count = args.lines.min(filtered.len());
-    let mut display_slice: Vec<&LogRecord> = if args.tail {
-        filtered
-    } else {
-        filtered[filtered.len() - display_count..].to_vec()
-    };
-
-    if args.tail {
-        return cmd_log_tail(date_naive, time_range, args.level.clone());
-    }
+    let mut display_slice: Vec<&LogRecord> = filtered[filtered.len() - display_count..].to_vec();
 
     display_slice.sort_by(|a, b| {
         match (
@@ -282,6 +334,21 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
             _ => a.timestamp.cmp(&b.timestamp),
         }
     });
+
+    println!(
+        "\n{}",
+        format!("Log Records - {}", date).bold().white().on_green()
+    );
+
+    if is_truncated {
+        println!(
+            "(Showing {} logs, capped at {})\n",
+            display_slice.len(),
+            MAX_RECORDS
+        );
+        print_log_lines(&display_slice);
+        return Ok(());
+    }
 
     let mut request_groups: BTreeMap<String, Vec<&LogRecord>> = BTreeMap::new();
     for record in &display_slice {
@@ -370,15 +437,14 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "\n{}",
-        format!("Log Records - {}", date).bold().white().on_green()
-    );
-
-    if !args.tail {
-        println!("(Showing {} most recent logs)\n", rows.len());
+    if has_filters {
+        println!(
+            "(Showing {} matching logs from last {} records)\n",
+            rows.len(),
+            MAX_RECORDS
+        );
     } else {
-        println!("(Following new logs - Ctrl+C to stop)\n");
+        println!("(Showing {} most recent logs)\n", rows.len());
     }
 
     // 终端宽度 → message 列折行宽度

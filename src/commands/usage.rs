@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bifrost_shared::usage::UsageRecord;
-use chrono::{Local, NaiveDate, NaiveTime};
-use clap::Parser;
+use chrono::{Datelike, Local, NaiveDate, NaiveTime};
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -12,6 +12,10 @@ use super::printing::print_warning;
 
 #[derive(Parser)]
 pub struct UsageArgs {
+    /// Quick subcommand for monthly usage summary
+    #[command(subcommand)]
+    pub subcommand: Option<UsageSubcommand>,
+
     /// Date to show (YYYY-MM-DD), defaults to today
     #[arg(long)]
     pub date: Option<String>,
@@ -35,6 +39,29 @@ pub struct UsageArgs {
     /// Filter by model (supports * wildcard, AND relationship)
     #[arg(short, long)]
     pub model: Option<String>,
+}
+
+/// Subcommands for the usage command
+#[derive(Subcommand)]
+pub enum UsageSubcommand {
+    /// Show current month's token usage grouped by provider.
+    ///
+    /// Month can be a number (1-12) for the current year, or YYYY-MM format.
+    /// Defaults to the current month.
+    Month {
+        /// Month number (1-12) or YYYY-MM format, defaults to current month
+        #[arg(index = 1)]
+        month: Option<String>,
+    },
+}
+
+#[derive(Tabled)]
+struct MonthRow {
+    provider: String,
+    requests: String,
+    prompt: String,
+    completion: String,
+    total: String,
 }
 
 #[derive(Tabled)]
@@ -161,7 +188,125 @@ fn read_records_for_range(from: &NaiveDate, to: &NaiveDate) -> Result<Vec<UsageR
     Ok(all_records)
 }
 
+fn cmd_month(month_str: Option<&str>) -> Result<()> {
+    let today = Local::now().date_naive();
+    let (year, month_num) = if let Some(m) = month_str {
+        if let Some((y_str, mo_str)) = m.split_once('-') {
+            // YYYY-MM format
+            let y: i32 = y_str
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid year in month: {m}"))?;
+            let mo: u32 = mo_str
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid month in: {m}"))?;
+            if !(1..=12).contains(&mo) {
+                anyhow::bail!("Invalid month value: {mo}. Must be 1-12");
+            }
+            (y, mo)
+        } else {
+            // Bare number: month of current year
+            let mo: u32 = m.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid month: {m}. Use a month number (1-12) or YYYY-MM format")
+            })?;
+            if !(1..=12).contains(&mo) {
+                anyhow::bail!("Invalid month value: {mo}. Must be 1-12");
+            }
+            (today.year(), mo)
+        }
+    } else {
+        (today.year(), today.month())
+    };
+
+    let first_day = NaiveDate::from_ymd_opt(year, month_num, 1)
+        .ok_or_else(|| anyhow::anyhow!("Invalid date: {year}-{month_num:02}"))?;
+
+    // If viewing current month, end at today; otherwise end at last day of month
+    let last_day = if year == today.year() && month_num == today.month() {
+        today
+    } else {
+        let next_month = if month_num == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                .ok_or_else(|| anyhow::anyhow!("Invalid date"))?
+        } else {
+            NaiveDate::from_ymd_opt(year, month_num + 1, 1)
+                .ok_or_else(|| anyhow::anyhow!("Invalid date"))?
+        };
+        next_month - chrono::Duration::days(1)
+    };
+
+    let records = read_records_for_range(&first_day, &last_day)?;
+
+    if records.is_empty() {
+        print_warning("No usage records found for this month");
+        return Ok(());
+    }
+
+    use std::collections::BTreeMap;
+    type StatsVal = (u32, u32, u32);
+
+    let mut by_provider: BTreeMap<String, StatsVal> = BTreeMap::new();
+    for r in &records {
+        let entry = by_provider
+            .entry(r.record.provider.clone())
+            .or_insert((0, 0, 0));
+        entry.0 += 1;
+        entry.1 += r.record.prompt_tokens;
+        entry.2 += r.record.completion_tokens;
+    }
+
+    let mut rows: Vec<MonthRow> = Vec::new();
+    for (provider, (requests, prompt, completion)) in by_provider {
+        let total = prompt + completion;
+        rows.push(MonthRow {
+            provider,
+            requests: requests.to_string(),
+            prompt: format_tokens(prompt),
+            completion: format_tokens(completion),
+            total: format_tokens(total),
+        });
+    }
+
+    let month_label = format!("{year}-{month_num:02}");
+    println!(
+        "\n{}",
+        format!("Monthly Usage - {}", month_label)
+            .bold()
+            .white()
+            .on_green()
+    );
+
+    let mut table = Table::new(&rows);
+    use tabled::settings::Style;
+    table.with(Style::rounded());
+    println!("{}", table);
+
+    let total_requests = records.len();
+    let total_prompt: u32 = records.iter().map(|r| r.record.prompt_tokens).sum();
+    let total_completion: u32 = records.iter().map(|r| r.record.completion_tokens).sum();
+    let total_tokens = total_prompt + total_completion;
+
+    println!();
+    println!(
+        "Total: {} {} | {} {} | {} {} | {} {}",
+        total_requests.to_string().bold().green(),
+        "requests".bold(),
+        format_tokens(total_prompt).bold().cyan(),
+        "prompt".bold(),
+        format_tokens(total_completion).bold().yellow(),
+        "completion".bold(),
+        format_tokens(total_tokens).bold().magenta(),
+        "total".bold()
+    );
+    println!();
+
+    Ok(())
+}
+
 pub fn cmd_usage(args: UsageArgs) -> Result<()> {
+    if let Some(UsageSubcommand::Month { month }) = &args.subcommand {
+        return cmd_month(month.as_deref());
+    }
+
     let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
 
     let (records, date_label) = if let (Some(from_str), Some(to_str)) = (&args.from, &args.to) {
