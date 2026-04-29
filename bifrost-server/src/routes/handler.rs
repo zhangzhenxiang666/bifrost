@@ -36,12 +36,13 @@ pub struct RequestContext {
     pub model_name: String,
 }
 
-type ModelResolution = (
-    String,
-    String,
-    Option<Vec<crate::types::HeaderEntry>>,
-    Option<Vec<crate::types::BodyEntry>>,
-);
+#[derive(Debug, Default)]
+struct AliasExtras {
+    headers: Option<Vec<crate::types::HeaderEntry>>,
+    body: Option<Vec<crate::types::BodyEntry>>,
+}
+
+type ModelResolution = (String, String, Option<AliasExtras>);
 
 fn resolve_model_target(
     body: &Value,
@@ -52,15 +53,17 @@ fn resolve_model_target(
         .and_then(|v| v.as_str())
         .ok_or_else(|| LlmMapError::Validation("Missing required field: model".to_string()))?;
 
-    let (model_target, alias_extra_headers, alias_extra_body) = if model_value.contains('@') {
-        (model_value.to_string(), None, None)
+    let (model_target, alias_extras) = if model_value.contains('@') {
+        (model_value.to_string(), None)
     } else {
         match registry.get_alias_entry(model_value) {
-            Some(AliasEntry::Simple(target)) => (target.clone(), None, None),
+            Some(AliasEntry::Simple(target)) => (target.clone(), None),
             Some(AliasEntry::Complex(config)) => (
                 config.target.clone(),
-                config.headers.clone(),
-                config.body.clone(),
+                Some(AliasExtras {
+                    headers: config.headers.clone(),
+                    body: config.body.clone(),
+                }),
             ),
             None => {
                 return Err(LlmMapError::Validation(format!(
@@ -75,29 +78,63 @@ fn resolve_model_target(
     Ok((
         provider_id.to_string(),
         model_name.to_string(),
-        alias_extra_headers,
-        alias_extra_body,
+        alias_extras,
     ))
+}
+
+/// Check if a body/header entry should be applied based on its condition
+fn should_apply_entry(condition: &Option<String>, route: &RouteEndpoint) -> bool {
+    match condition {
+        None => true, // No condition, apply to all endpoints
+        Some(cond) => {
+            // Normalize: replace hyphens with underscores for consistent matching
+            let cond_normalized = cond.to_lowercase().replace('-', "_");
+            let matches = match cond_normalized.as_str() {
+                "openai_chat" | "openai-chat" => matches!(route, RouteEndpoint::OpenAIChat),
+                "openai_responses" | "openai-responses" => {
+                    matches!(route, RouteEndpoint::OpenAIResponses)
+                }
+                "anthropic" => matches!(route, RouteEndpoint::AnthropicMessages),
+                _ => {
+                    tracing::warn!(
+                        condition = %cond,
+                        "Unknown condition value, ignoring entry"
+                    );
+                    false
+                }
+            };
+            if !matches {
+                tracing::debug!(
+                    condition = %cond,
+                    route = ?route,
+                    "Skipping entry due to condition mismatch"
+                );
+            }
+            matches
+        }
+    }
 }
 
 fn merge_provider_config_into_request(
     body: &mut Value,
     headers: &mut HeaderMap,
     provider: &crate::types::ProviderConfig,
-    alias_extra_headers: Option<Vec<crate::types::HeaderEntry>>,
-    alias_extra_body: Option<Vec<crate::types::BodyEntry>>,
+    alias_extras: Option<AliasExtras>,
     model_name: &str,
-    provider_id: &str,
+    route: &RouteEndpoint,
 ) -> Result<()> {
-    if let Some(extra_body) = alias_extra_body {
-        for body_entry in extra_body {
-            body[&body_entry.name] = body_entry.value;
+    if let Some(extras) = alias_extras.as_ref().and_then(|e| e.body.as_ref()) {
+        for body_entry in extras {
+            if should_apply_entry(&body_entry.condition, route) {
+                body[&body_entry.name] = body_entry.value.clone();
+            }
         }
     }
 
-    if let Some(extra_headers) = alias_extra_headers {
-        for header_entry in extra_headers {
-            if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
+    if let Some(extras) = alias_extras.as_ref().and_then(|e| e.headers.as_ref()) {
+        for header_entry in extras {
+            if should_apply_entry(&header_entry.condition, route)
+                && let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
             {
                 headers.insert(header_name, header_value);
@@ -107,9 +144,11 @@ fn merge_provider_config_into_request(
 
     if let Some(provider_body_fields) = provider.body.as_ref() {
         for body_entry in provider_body_fields {
+            if !should_apply_entry(&body_entry.condition, route) {
+                continue;
+            }
             if PROTECTED_BODY_FIELDS.contains(&body_entry.name.as_str()) {
                 tracing::warn!(
-                    provider_id = %provider_id,
                     field = %body_entry.name,
                     "Ignoring protected field in provider body config"
                 );
@@ -121,6 +160,9 @@ fn merge_provider_config_into_request(
 
     if let Some(provider_headers) = provider.headers.as_ref() {
         for header_entry in provider_headers {
+            if !should_apply_entry(&header_entry.condition, route) {
+                continue;
+            }
             if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                 && let Ok(header_value) = header_entry.value.parse::<http::header::HeaderValue>()
             {
@@ -134,9 +176,11 @@ fn merge_provider_config_into_request(
     {
         if let Some(model_body_fields) = model_cfg.body.as_ref() {
             for body_entry in model_body_fields {
+                if !should_apply_entry(&body_entry.condition, route) {
+                    continue;
+                }
                 if PROTECTED_BODY_FIELDS.contains(&body_entry.name.as_str()) {
                     tracing::warn!(
-                        provider_id = %provider_id,
                         model = %model_name,
                         field = %body_entry.name,
                         "Ignoring protected field in model body config"
@@ -148,6 +192,9 @@ fn merge_provider_config_into_request(
         }
         if let Some(model_headers) = model_cfg.headers.as_ref() {
             for header_entry in model_headers {
+                if !should_apply_entry(&header_entry.condition, route) {
+                    continue;
+                }
                 if let Ok(header_name) = header_entry.name.parse::<http::header::HeaderName>()
                     && let Ok(header_value) =
                         header_entry.value.parse::<http::header::HeaderValue>()
@@ -167,8 +214,7 @@ pub async fn execute_provider_request(
     mut headers: HeaderMap,
     mut body: Value,
 ) -> Result<RequestContext> {
-    let (provider_id, model_name, alias_extra_headers, alias_extra_body) =
-        resolve_model_target(&body, &state.registry)?;
+    let (provider_id, model_name, alias_extras) = resolve_model_target(&body, &state.registry)?;
 
     let provider = state
         .registry
@@ -192,14 +238,16 @@ pub async fn execute_provider_request(
         util::extend_overwrite(&mut final_headers, headers);
     }
 
+    let span = tracing::info_span!("merge_config", provider_id = %provider_id);
+    let _enter = span.enter();
+
     merge_provider_config_into_request(
         &mut body,
         &mut final_headers,
         provider,
-        alias_extra_headers,
-        alias_extra_body,
+        alias_extras,
         &model_name,
-        &provider_id,
+        &route,
     )?;
 
     let (url, auth_headers) = build_request_parts(provider);
@@ -329,7 +377,7 @@ pub async fn process_stream_request(
             response
                 .bytes_stream()
                 .into_sse_stream()
-                .timeout(Duration::from_secs(60)),
+                .timeout(Duration::from_secs(90)),
         );
         let mut prompt_tokens: u32 = 0;
         let mut completion_tokens: u32 = 0;
@@ -387,6 +435,7 @@ pub async fn process_stream_request(
         // Record usage after stream ends
         record_stream_usage(&provider_id, &model_name, prompt_tokens, completion_tokens);
         // Channel will be closed automatically when tx is dropped
+        drop(tx);
     });
 
     // Convert receiver to stream for axum SSE

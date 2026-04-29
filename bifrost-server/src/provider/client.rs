@@ -3,11 +3,16 @@
 //! Provides a wrapper around reqwest::Client with support for
 //! both non-streaming and streaming requests.
 
-use http::{HeaderMap, StatusCode};
+use http::HeaderMap;
 use rand::Rng;
 use reqwest::{Client, Response};
 use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static DEFAULT_RETRY_CODES: LazyLock<HashSet<u16>> =
+    LazyLock::new(|| [429, 500, 502, 503, 504].into_iter().collect());
 
 /// Retry configuration for HTTP requests
 #[derive(Debug, Clone)]
@@ -16,6 +21,8 @@ pub struct RetryConfig {
     pub max_retries: u32,
     /// Base delay for exponential backoff in milliseconds
     pub backoff_base_ms: u64,
+    /// Additional HTTP status codes that should trigger a retry (extends defaults)
+    pub retry_status_codes: Option<HashSet<u16>>,
 }
 
 impl Default for RetryConfig {
@@ -23,6 +30,7 @@ impl Default for RetryConfig {
         Self {
             max_retries: 5,
             backoff_base_ms: 700,
+            retry_status_codes: None,
         }
     }
 }
@@ -82,25 +90,6 @@ impl HttpClient {
             timeout_secs,
             retry_config,
         })
-    }
-
-    /// Check if a status code indicates the request should be retried
-    ///
-    /// Returns true for:
-    /// - 429 Too Many Requests
-    /// - 500 Internal Server Error
-    /// - 502 Bad Gateway
-    /// - 503 Service Unavailable
-    /// - 504 Gateway Timeout
-    pub fn should_retry_status(status: StatusCode) -> bool {
-        matches!(
-            status,
-            StatusCode::TOO_MANY_REQUESTS  // 429
-                | StatusCode::INTERNAL_SERVER_ERROR  // 500
-                | StatusCode::BAD_GATEWAY             // 502
-                | StatusCode::SERVICE_UNAVAILABLE     // 503
-                | StatusCode::GATEWAY_TIMEOUT // 504
-        )
     }
 
     /// Check if an error is retryable (network errors, timeouts, etc.)
@@ -183,7 +172,14 @@ impl HttpClient {
             match response {
                 Ok(resp) => {
                     let status = resp.status();
-                    if Self::should_retry_status(status) && attempt < self.retry_config.max_retries
+                    let status_code = status.as_u16();
+                    if (DEFAULT_RETRY_CODES.contains(&status_code)
+                        || self
+                            .retry_config
+                            .retry_status_codes
+                            .as_ref()
+                            .is_some_and(|codes| codes.contains(&status_code)))
+                        && attempt < self.retry_config.max_retries
                     {
                         attempt += 1;
                         let delay =

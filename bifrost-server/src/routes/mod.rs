@@ -10,6 +10,7 @@ pub mod handler;
 pub mod openai;
 pub mod status;
 
+#[derive(Debug)]
 pub enum RouteEndpoint {
     OpenAIChat,
     OpenAIResponses,

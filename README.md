@@ -90,6 +90,39 @@ endpoint = "anthropic"
 
 ### Usage 命令参数
 
+#### 子命令
+
+| 子命令 | 说明 |
+| ------ | ---- |
+| `usage month` | 查看月度 token 用量，按 Provider 分组汇总 |
+
+#### 子命令：`usage month`
+
+```bash
+bifrost usage month [month]
+```
+
+| 参数 | 说明 |
+| ---- | ---- |
+| `month` (可选) | 月份数字 (1-12，表示当前年份) 或 `YYYY-MM` 格式，默认当月 |
+
+**使用示例：**
+
+```bash
+# 查看当月 token 用量
+bifrost usage month
+
+# 查看指定月份（4月，当前年份）
+bifrost usage month 4
+
+# 查看指定月份（2026年4月）
+bifrost usage month 2026-04
+```
+
+按 Provider 分组汇总，显示每个 Provider 的请求数、Prompt Token、Completion Token、Total Token。
+
+#### 查询参数
+
 | 参数 | 简写 | 默认值 | 说明 |
 | ---- | ---- | ------ | ---- |
 | `--date` | - | 今天 | 指定日期 (YYYY-MM-DD)，默认当天 |
@@ -151,6 +184,7 @@ bifrost log --time-range 09:00-12:00
 | `timeout_secs` | u64 | 600 | HTTP 请求超时时间（秒） |
 | `max_retries` | u32 | 5 | HTTP 请求失败最大重试次数 |
 | `retry_backoff_base_ms` | u64 | 700 | 指数回避基础延迟（毫秒） |
+| `retry_status_codes` | Array\<u16\> | - | 额外触发重试的 HTTP 状态码（与默认值 [429, 500, 502, 503, 504] 合并） |
 | `proxy` | String | - | HTTP 代理地址（可选） |
 
 ### Provider 配置 `[provider.<name>]`
@@ -201,6 +235,40 @@ body_policy = { blocklist = ["prediction", "modalities"] }
 { name = "X-Header-Name", value = "header-value" }
 { name = "body_field", value = "field-value" }
 ```
+
+**可选字段 `condition`**：根据**客户端请求的端点类型**决定是否生效。即客户端访问 Bifrost server 时使用的接口类型，而非上游 provider 的端点类型。
+
+**匹配规则**：
+
+- 当客户端访问的端点类型与 `condition` 值匹配时，该字段会被应用
+- 当客户端访问的端点类型与 `condition` 值**不匹配**时，该字段**不会**被应用
+- 当 `condition` 为 `null` 或省略时，该字段**总是**被应用（适用于所有端点）
+
+有效值：
+
+- `"openai_chat"` 或 `"openai-chat"`：匹配 OpenAI Chat Completions 接口（`/openai/chat/completions` 或 `/openai/v1/chat/completions`）
+- `"openai_responses"` 或 `"openai-responses"`：匹配 OpenAI Responses 接口（`/openai/responses` 或 `/openai/v1/responses`）
+- `"anthropic"`：匹配 Anthropic Messages 接口（`/anthropic/messages` 或 `/anthropic/v1/messages`）
+
+```toml
+# 仅当客户端访问 /openai/chat/completions 时，此 header 才会被添加
+{ name = "X-Chat-Only", value = "chat-value", condition = "openai_chat" }
+
+# 仅当客户端访问 /openai/responses 时，此 body 字段才会被添加
+{ name = "response_format", value = "json", condition = "openai-responses" }
+
+# 仅当客户端访问 /anthropic/messages 时，此 header 才会被添加
+{ name = "thinking_enabled", value = true, condition = "anthropic" }
+
+# 适用于所有端点（无论客户端访问哪个接口）
+{ name = "X-Common-Header", value = "common-value" }
+```
+
+**示例**：假设配置了 `provider.anthropic`（上游是 Anthropic），客户端请求如下：
+
+- 访问 `/openai/chat/completions` → `condition = "openai_chat"` 的字段**会**应用，`condition = "anthropic"` 的字段**不会**应用
+- 访问 `/anthropic/messages` → `condition = "anthropic"` 的字段**会**应用，`condition = "openai_chat"` 的字段**不会**应用
+- 访问任何接口 → `condition = null` 的字段**总是**应用
 
 ### Alias 配置 `[alias.<name>]`
 

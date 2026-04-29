@@ -64,6 +64,7 @@ impl ProviderRegistry {
         let retry_config = crate::provider::client::RetryConfig {
             max_retries: config.server.max_retries.unwrap_or(5),
             backoff_base_ms: config.server.retry_backoff_base_ms.unwrap_or(700),
+            retry_status_codes: config.server.retry_status_codes.clone(),
         };
         let http_client =
             HttpClient::with_retry(timeout_secs, config.server.proxy.as_deref(), retry_config);
@@ -380,10 +381,12 @@ mod tests {
                 headers: Some(vec![HeaderEntry {
                     name: "X-Custom-Header".to_string(),
                     value: "custom-value".to_string(),
+                    condition: None,
                 }]),
                 body: Some(vec![BodyEntry {
                     name: "custom_field".to_string(),
                     value: json!("custom_value"),
+                    condition: None,
                 }]),
                 models: None,
                 exclude_headers: None,
