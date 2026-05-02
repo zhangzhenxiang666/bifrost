@@ -4,10 +4,10 @@
 //! It loads configuration and runs the proxy server.
 
 use bifrost_server::Config;
-use chrono::Local;
 use daemonize::Daemonize;
 use std::fs;
 use std::io::Write;
+use tracing_rolling_file::*;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -35,13 +35,25 @@ fn send_startup_result(socket_path: &str, success: bool, message: Option<&str>) 
 
 /// Run the server (blocking - runs until server stops)
 fn run_server() -> anyhow::Result<()> {
-    // Set up logging to file
+    // Set up logging to file with size-based rotation and date-based naming
     let log_dir = dirs::home_dir()
         .expect("Failed to get home directory")
         .join(".bifrost")
         .join("logs");
-    let log_filename = format!("{}.log", Local::now().format("%Y-%m-%d"));
-    let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
+
+    // Create log file with date in filename
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log_path = log_dir.join(format!("{}.log", date));
+    let file_appender = RollingFileAppenderBase::new(
+        log_path.to_string_lossy().to_string(),
+        RollingConditionBase::new()
+            .daily()
+            .max_size(50 * 1024 * 1024), // daily or 50MB
+        24, // keep 24 files max
+    )
+    .expect("Failed to build log appender");
+
+    let (non_blocking, _guard) = file_appender.get_non_blocking_appender();
 
     tracing_subscriber::registry()
         .with(
@@ -54,7 +66,7 @@ fn run_server() -> anyhow::Result<()> {
                 .with_ansi(false)
                 .with_timer(tracing_subscriber::fmt::time::ChronoLocal::rfc_3339())
                 .json()
-                .with_writer(file_appender),
+                .with_writer(non_blocking),
         )
         .with(tracing_subscriber::EnvFilter::new("info"))
         .try_init()
@@ -92,21 +104,21 @@ fn main() -> anyhow::Result<()> {
         .join(".bifrost")
         .join("bifrost.pid");
 
-    // Log file with date-based naming (YYYY-MM-DD.log)
-    let log_file = dirs::home_dir()
+    // Log directory for daemon output files
+    let log_dir = dirs::home_dir()
         .expect("Failed to get home directory")
         .join(".bifrost")
-        .join("logs")
-        .join(format!("{}.log", Local::now().format("%Y-%m-%d")));
+        .join("logs");
+
     // Daemonize the process
     let stdout_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_file.parent().unwrap().join("bifrost.out"))?;
+        .open(log_dir.join("bifrost.out"))?;
     let stderr_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_file.parent().unwrap().join("bifrost.err"))?;
+        .open(log_dir.join("bifrost.err"))?;
 
     // Check for startup socket from CLI
     let startup_socket = std::env::var(STARTUP_SOCKET_ENV).ok();

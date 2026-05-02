@@ -88,13 +88,20 @@ pub fn cleanup_old_logs() -> Result<usize> {
             continue;
         }
 
-        // Extract date from filename (format: YYYY-MM-DD.log)
-        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
-        if let Ok(log_date) = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d") {
+        // New format: YYYY-MM-DD.log or YYYY-MM-DD.log.N (rolling files)
+        // Extract date from filename
+        let date_str = if filename.ends_with(".log") {
+            // Check if it's a rolling file (e.g., 2026-05-02.log.1)
+            filename.split('.').next().unwrap_or("")
+        } else {
+            continue;
+        };
+
+        if let Ok(log_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
             let log_date = log_date.and_hms_opt(0, 0, 0).unwrap();
             let log_date = Local.from_local_datetime(&log_date).single().unwrap();
-
             let age = now.signed_duration_since(log_date);
 
             if age.num_days() > LOG_RETENTION_DAYS {

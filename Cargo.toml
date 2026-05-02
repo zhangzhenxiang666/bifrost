@@ -1,6 +1,6 @@
 [package]
 name = "bifrost"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Bifrost CLI - Management tool for Bifrost server"
 
@@ -41,6 +41,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter", "json"] }
 tracing-appender = "0.2"
+tracing-rolling-file = { version = "0.1", features = ["non-blocking"] }
 daemonize = "0.5"
 dirs = "6.0"
 whoami = "1.5"

@@ -381,18 +381,25 @@ pub async fn process_stream_request(
         );
         let mut prompt_tokens: u32 = 0;
         let mut completion_tokens: u32 = 0;
+        let mut consecutive_errors: u32 = 0;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(Ok(event)) => {
+                    consecutive_errors = 0;
+
                     if event.data.starts_with("[DONE]") {
+                        tracing::debug!(msg = "Received [DONE] sentinel, ending stream");
                         break;
                     }
 
-                    let chunk: Value = if let Ok(data) = serde_json::from_str(&event.data) {
-                        data
-                    } else {
-                        continue;
+                    let chunk: Value = match serde_json::from_str(&event.data) {
+                        Ok(data) => data,
+                        Err(error) => {
+                            tracing::warn!(msg = "Failed to parse SSE event data", error = %error, data = %event.data);
+                            continue;
+                        }
                     };
 
                     try_extract_usage(
@@ -405,29 +412,49 @@ pub async fn process_stream_request(
 
                     let transform = executor.execute_stream_chunk(chunk, event.event).await;
 
-                    let Ok(transform) = transform else {
-                        continue;
-                    };
-
-                    for (data, event_name) in transform.events {
-                        let data_str =
-                            serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
-                        let mut sse_event = Event::default();
-                        if let Some(name) = event_name {
-                            sse_event = sse_event.event(name);
+                    match transform {
+                        Ok(transform) => {
+                            for (data, event_name) in transform.events {
+                                let data_str = serde_json::to_string(&data)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                let mut sse_event = Event::default();
+                                if let Some(name) = event_name {
+                                    sse_event = sse_event.event(name);
+                                }
+                                sse_event = sse_event.data(data_str);
+                                match tx.send(Ok(sse_event)).await {
+                                    Ok(()) => {}
+                                    Err(error) => {
+                                        tracing::warn!(msg = "SSE client disconnected, stopping stream", error = %error);
+                                        break;
+                                    }
+                                }
+                            }
                         }
-                        sse_event = sse_event.data(data_str);
-                        if tx.send(Ok(sse_event)).await.is_err() {
-                            break;
+                        Err(error) => {
+                            tracing::warn!(msg = "Error executing stream chunk", error = %error);
                         }
                     }
                 }
                 Ok(Err(err)) => {
-                    tracing::warn!(msg = %err, r#type = "sse-parser");
+                    consecutive_errors += 1;
+                    tracing::warn!(
+                        msg = %err,
+                        r#type = "sse-parser",
+                        consecutive_errors = consecutive_errors,
+                        max_consecutive_errors = MAX_CONSECUTIVE_ERRORS,
+                    );
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        tracing::error!(
+                            msg = "Too many consecutive SSE errors, stopping stream",
+                            consecutive_errors = consecutive_errors,
+                        );
+                        break;
+                    }
                     continue;
                 }
                 Err(_elapsed) => {
-                    tracing::warn!("SSE stream timed out after 60s");
+                    tracing::warn!("SSE stream timed out after 90s");
                     break;
                 }
             }
@@ -436,6 +463,7 @@ pub async fn process_stream_request(
         record_stream_usage(&provider_id, &model_name, prompt_tokens, completion_tokens);
         // Channel will be closed automatically when tx is dropped
         drop(tx);
+        tracing::debug!(msg = "SSE stream sender dropped, channel closed");
     });
 
     // Convert receiver to stream for axum SSE

@@ -15,6 +15,8 @@ pub struct SseEvent {
     pub data: String,
 }
 
+const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB limit
+
 pin_project_lite::pin_project! {
     /// A stream that parses SSE events from a byte stream.
     pub struct SseStream<S> {
@@ -56,6 +58,15 @@ where
 
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
+                    if this.buffer.len() + bytes.len() > MAX_BUFFER_SIZE {
+                        tracing::error!(
+                            msg = "SSE buffer overflow, clearing buffer",
+                            buffer_size = this.buffer.len(),
+                            incoming_bytes = bytes.len(),
+                            max_size = MAX_BUFFER_SIZE,
+                        );
+                        this.buffer.clear();
+                    }
                     this.buffer.push_str(&String::from_utf8_lossy(&bytes));
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -192,5 +203,19 @@ mod tests {
         let mut sse = stream.into_sse_stream();
         let event = sse.next().await.unwrap().unwrap();
         assert_eq!(event.data, "trailing");
+    }
+
+    #[tokio::test]
+    async fn test_buffer_overflow_protection() {
+        // Create a large chunk that exceeds MAX_BUFFER_SIZE without \n\n delimiter
+        // Use a static string to avoid lifetime issues
+        let large_data: &'static str =
+            Box::leak("x".repeat(MAX_BUFFER_SIZE + 100).into_boxed_str());
+        let stream = bytes_stream_from(vec![large_data, "data: valid\n\n"]);
+        let mut sse = stream.into_sse_stream();
+
+        // Should still parse valid events after buffer clear
+        let event = sse.next().await.unwrap().unwrap();
+        assert_eq!(event.data, "valid");
     }
 }
