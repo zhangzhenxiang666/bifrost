@@ -30,7 +30,10 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
     let input = obj.remove("input");
     let mut chat_messages = Vec::new();
 
-    if let Some(instr) = instructions {
+    if let Some(input_val) = input {
+        let messages = transform_input_to_messages(input_val, instructions)?;
+        chat_messages.extend(messages);
+    } else if let Some(instr) = instructions {
         let system_text = extract_text_from_value(instr);
         if !system_text.is_empty() {
             chat_messages.push(json!({
@@ -38,11 +41,6 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
                 "content": system_text
             }));
         }
-    }
-
-    if let Some(input_val) = input {
-        let messages = transform_input_to_messages(input_val)?;
-        chat_messages.extend(messages);
     }
 
     obj.insert("messages".to_string(), Value::Array(chat_messages));
@@ -108,27 +106,81 @@ fn build_chat_message(role: &str, content: Value) -> Value {
     Value::Object(msg)
 }
 
-/// Try to merge a tool_call into the last assistant message if its content is null.
+/// Try to merge content into the last user message if consecutive.
 ///
-/// Returns `true` if merged, `false` if a new assistant message should be created.
-/// Only merges when the immediately preceding assistant message has `content: null`,
-/// preserving proper message ordering for Chat API compatibility.
-fn try_merge_tool_call(messages: &mut [Value], tool_call: &Value) -> bool {
-    let Some(last_msg) = messages.last_mut() else {
-        return false;
+/// Returns `None` if merged (content consumed), `Some(content)` if not merged (content returned).
+/// This handles consecutive user messages by combining their content into a single array.
+fn try_merge_user_content(messages: &mut [Value], role: &str, content: Value) -> Option<Value> {
+    if role != "user" {
+        return Some(content);
+    }
+
+    let Some(Value::Object(msg_obj)) = messages.last_mut() else {
+        return Some(content);
     };
 
-    let Value::Object(msg_obj) = last_msg else {
-        return false;
+    // Only merge if the last message is also a user message (not tool or assistant)
+    if msg_obj.get("role").and_then(|v| v.as_str()) != Some("user") {
+        return Some(content);
+    }
+
+    // Get existing content and convert to array of content blocks
+    let existing_content = msg_obj.remove("content").unwrap_or(Value::Null);
+    let mut existing_blocks = content_value_to_blocks(existing_content);
+
+    // Convert new content to blocks and append
+    let new_blocks = content_value_to_blocks(content);
+    existing_blocks.extend(new_blocks);
+
+    // If only one block and it's a simple text without detail, flatten to string
+    if existing_blocks.len() == 1
+        && let Value::Object(ref obj) = existing_blocks[0]
+        && obj.get("type").and_then(|v| v.as_str()) == Some("text")
+        && obj.contains_key("text")
+        && !obj.contains_key("detail")
+        && let Some(text) = obj.get("text")
+    {
+        msg_obj.insert("content".to_string(), text.clone());
+        return None;
+    }
+
+    msg_obj.insert("content".to_string(), Value::Array(existing_blocks));
+    None
+}
+
+/// Convert a content value to a vector of content blocks.
+///
+/// Handles string content (converts to text block) and array content (returns as-is).
+fn content_value_to_blocks(content: Value) -> Vec<Value> {
+    match content {
+        Value::String(s) => {
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![json!({
+                    "type": "text",
+                    "text": s
+                })]
+            }
+        }
+        Value::Array(arr) => arr,
+        Value::Null => Vec::new(),
+        _ => Vec::new(),
+    }
+}
+
+/// Try to merge a tool_call into the last assistant message.
+///
+/// Returns `None` if merged (tool_call consumed), `Some(tool_call)` if not merged (returned).
+/// Merges when the immediately preceding message is an assistant message,
+/// allowing tool_calls alongside content (Chat API supports this).
+fn try_merge_tool_call(messages: &mut [Value], tool_call: Value) -> Option<Value> {
+    let Some(Value::Object(msg_obj)) = messages.last_mut() else {
+        return Some(tool_call);
     };
 
     if msg_obj.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-        return false;
-    }
-
-    // Only merge when content is null (not empty string)
-    if !matches!(msg_obj.get("content"), Some(Value::Null)) {
-        return false;
+        return Some(tool_call);
     }
 
     let mut tool_calls = msg_obj
@@ -138,21 +190,35 @@ fn try_merge_tool_call(messages: &mut [Value], tool_call: &Value) -> bool {
             _ => None,
         })
         .unwrap_or_default();
-    tool_calls.push(tool_call.clone());
+    tool_calls.push(tool_call);
     msg_obj.insert("tool_calls".to_string(), Value::Array(tool_calls));
 
-    true
+    None
 }
 
 /// Transform Responses API input to Chat API messages format.
-fn transform_input_to_messages(input: Value) -> Result<Vec<Value>, LlmMapError> {
+fn transform_input_to_messages(
+    input: Value,
+    instructions: Option<Value>,
+) -> Result<Vec<Value>, LlmMapError> {
     let items = match input {
         Value::Array(arr) => arr,
         Value::String(s) => {
-            return Ok(vec![json!({
+            let mut messages = Vec::new();
+            if let Some(instr) = instructions {
+                let system_text = extract_text_from_value(instr);
+                if !system_text.is_empty() {
+                    messages.push(json!({
+                        "role": "system",
+                        "content": system_text
+                    }));
+                }
+            }
+            messages.push(json!({
                 "role": "user",
                 "content": s
-            })]);
+            }));
+            return Ok(messages);
         }
         _ => {
             return Err(LlmMapError::Validation(
@@ -162,13 +228,56 @@ fn transform_input_to_messages(input: Value) -> Result<Vec<Value>, LlmMapError> 
     };
 
     let mut messages = Vec::new();
+    let mut system_texts: Vec<String> = Vec::new();
+
+    // Collect instructions as first system text
+    if let Some(instr) = instructions {
+        let system_text = extract_text_from_value(instr);
+        if !system_text.is_empty() {
+            system_texts.push(system_text);
+        }
+    }
+
+    let mut found_non_developer = false;
 
     for item in items {
-        if let Value::String(s) = &item {
+        // Extract role from the item for leading developer detection
+        let item_role = match &item {
+            Value::Object(obj) => obj.get("role").and_then(|v| v.as_str()),
+            _ => None,
+        };
+
+        // Collect leading consecutive developer messages into system
+        if !found_non_developer && item_role == Some("developer") {
+            let text = extract_developer_text(&item);
+            if !text.is_empty() {
+                system_texts.push(text);
+            }
+            continue;
+        }
+
+        // Once we hit a non-developer message, flush collected system texts
+        if !system_texts.is_empty() {
+            let merged = system_texts.join("\n\n");
             messages.push(json!({
-                "role": "user",
-                "content": s
+                "role": "system",
+                "content": merged
             }));
+            system_texts.clear();
+        }
+
+        found_non_developer = true;
+
+        if let Value::String(s) = item {
+            // Try to merge consecutive user messages
+            if let Some(Value::String(s)) =
+                try_merge_user_content(&mut messages, "user", Value::String(s))
+            {
+                messages.push(json!({
+                    "role": "user",
+                    "content": s
+                }));
+            }
             continue;
         }
 
@@ -203,7 +312,7 @@ fn transform_input_to_messages(input: Value) -> Result<Vec<Value>, LlmMapError> 
                     }
                 });
 
-                if !try_merge_tool_call(&mut messages, &tool_call) {
+                if let Some(tool_call) = try_merge_tool_call(&mut messages, tool_call) {
                     let mut new_msg = serde_json::Map::new();
                     new_msg.insert("role".to_string(), Value::String("assistant".to_string()));
                     new_msg.insert("content".to_string(), Value::Null);
@@ -229,8 +338,20 @@ fn transform_input_to_messages(input: Value) -> Result<Vec<Value>, LlmMapError> 
                 }));
             }
             Some("reasoning") => {
-                // Skip — Chat API doesn't support reasoning blocks
-                continue;
+                let reasoning_content = extract_reasoning_content(&obj);
+                if reasoning_content.is_empty() {
+                    continue;
+                }
+
+                // Create a new assistant message with reasoning_content
+                let mut new_msg = serde_json::Map::new();
+                new_msg.insert("role".to_string(), Value::String("assistant".to_string()));
+                new_msg.insert("content".to_string(), Value::Null);
+                new_msg.insert(
+                    "reasoning_content".to_string(),
+                    Value::String(reasoning_content),
+                );
+                messages.push(Value::Object(new_msg));
             }
             // "message" type and raw objects with role+content converge to the same path
             Some("message") | None | Some(_) => {
@@ -255,15 +376,52 @@ fn transform_input_to_messages(input: Value) -> Result<Vec<Value>, LlmMapError> 
                 };
 
                 let transformed = transform_response_message_content(content_val)?;
-                messages.push(build_chat_message(
-                    normalize_chat_role(role_str),
-                    transformed,
-                ));
+
+                // Try to merge content into previous assistant message with only reasoning_content
+                if role_str == "assistant"
+                    && let Some(Value::Object(msg_obj)) = messages.last_mut()
+                    && msg_obj.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                    && matches!(msg_obj.get("content"), Some(Value::Null))
+                    && msg_obj.contains_key("reasoning_content")
+                {
+                    msg_obj.insert("content".to_string(), transformed);
+                    continue;
+                }
+
+                // Try to merge consecutive user messages
+                let normalized_role = normalize_chat_role(role_str);
+                if let Some(transformed) =
+                    try_merge_user_content(&mut messages, normalized_role, transformed)
+                {
+                    messages.push(build_chat_message(normalized_role, transformed));
+                }
             }
         }
     }
 
+    // Flush any remaining system texts
+    if !system_texts.is_empty() {
+        let merged = system_texts.join("\n\n");
+        messages.push(json!({
+            "role": "system",
+            "content": merged
+        }));
+    }
+
     Ok(messages)
+}
+
+/// Extract text content from a developer message item.
+fn extract_developer_text(item: &Value) -> String {
+    let Value::Object(obj) = item else {
+        return String::new();
+    };
+
+    let Some(content) = obj.get("content") else {
+        return String::new();
+    };
+
+    extract_text_from_value(content.clone())
 }
 
 /// Transform content blocks from Responses API format to Chat API format.
@@ -438,9 +596,40 @@ fn extract_text_from_value(value: Value) -> String {
                 None
             })
             .collect::<Vec<_>>()
-            .join(" "),
+            .join("\n\n"),
         _ => String::new(),
     }
+}
+
+/// Extract reasoning_content from a reasoning block.
+///
+/// Extracts text from summary and content arrays, joining them into a single string.
+fn extract_reasoning_content(reasoning_obj: &serde_json::Map<String, Value>) -> String {
+    let mut texts = Vec::new();
+
+    if let Some(Value::Array(summary)) = reasoning_obj.get("summary") {
+        for item in summary {
+            if let Value::Object(obj) = item
+                && obj.get("type").and_then(|v| v.as_str()) == Some("summary_text")
+                && let Some(text) = obj.get("text").and_then(|v| v.as_str())
+            {
+                texts.push(text);
+            }
+        }
+    }
+
+    if let Some(Value::Array(content)) = reasoning_obj.get("content") {
+        for item in content {
+            if let Value::Object(obj) = item
+                && obj.get("type").and_then(|v| v.as_str()) == Some("reasoning_text")
+                && let Some(text) = obj.get("text").and_then(|v| v.as_str())
+            {
+                texts.push(text);
+            }
+        }
+    }
+
+    texts.join("\n\n")
 }
 
 #[cfg(test)]
@@ -469,6 +658,7 @@ mod tests {
 
     #[test]
     fn test_mixed_input_types() {
+        // 连续的 user 消息被合并
         let input = json!({
             "model": "gpt-4o",
             "input": [
@@ -480,8 +670,13 @@ mod tests {
         let expected = json!({
             "model": "gpt-4o",
             "messages": [
-                {"role": "user", "content": "Hello!"},
-                {"role": "user", "content": "How are you?"}
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hello!"},
+                        {"type": "text", "text": "How are you?"}
+                    ]
+                }
             ]
         });
 
@@ -511,15 +706,176 @@ mod tests {
 
     #[test]
     fn test_role_developer() {
-        // developer -> user (不是 system)
+        // 中间的 developer -> user，连续的 user 消息被合并
         let input = json!({
             "model": "gpt-4o",
-            "input": [{"role": "developer", "content": [{"type": "input_text", "text": "You are Codex."}]}]
+            "input": [
+                {"role": "user", "content": "Hello"},
+                {"role": "developer", "content": [{"type": "input_text", "text": "You are Codex."}]}
+            ]
         });
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "You are Codex."}]
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hello"},
+                        {"type": "text", "text": "You are Codex."}
+                    ]
+                }
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_leading_developer_to_system() {
+        // 开头连续的 developer 消息合并到 system
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "You are a coding assistant."}]},
+                {"role": "developer", "content": [{"type": "input_text", "text": "Be concise."}]},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are a coding assistant.\n\nBe concise."},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_single_leading_developer_to_system() {
+        // 单个开头的 developer 消息转为 system
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "You are helpful."}]},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_developer_mixed_leading_and_middle() {
+        // 开头的 developer 合并到 system，中间的 developer 当作 user，连续的 user 消息被合并
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "System instruction 1."}]},
+                {"role": "developer", "content": [{"type": "input_text", "text": "System instruction 2."}]},
+                {"role": "user", "content": "Hello"},
+                {"role": "developer", "content": [{"type": "input_text", "text": "Mid conversation developer."}]}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "System instruction 1.\n\nSystem instruction 2."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hello"},
+                        {"type": "text", "text": "Mid conversation developer."}
+                    ]
+                }
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_instructions_and_developer_merged() {
+        // instructions 和开头的 developer 消息合并为一个 system 消息
+        let input = json!({
+            "model": "gpt-4o",
+            "instructions": "You are a helpful assistant.",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "Be concise."}]},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant.\n\nBe concise."},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_instructions_and_multiple_developer_merged() {
+        // instructions 和多个开头的 developer 消息合并
+        let input = json!({
+            "model": "gpt-4o",
+            "instructions": "You are a coding assistant.",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "Write clean code."}]},
+                {"role": "developer", "content": [{"type": "input_text", "text": "Follow best practices."}]},
+                {"role": "user", "content": "Write a function."}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are a coding assistant.\n\nWrite clean code.\n\nFollow best practices."},
+                {"role": "user", "content": "Write a function."}
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_instructions_only() {
+        // 只有 instructions，没有 developer
+        let input = json!({
+            "model": "gpt-4o",
+            "instructions": "You are helpful.",
+            "input": [
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"}
+            ]
         });
 
         let result = responses_to_chat_request(input).unwrap();
@@ -536,6 +892,38 @@ mod tests {
         let expected = json!({
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Write a function."}]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_consecutive_user_messages_merged() {
+        // 连续的 user 消息应该合并为一个包含多个 content blocks 的消息
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "First message."}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "Second message."}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "Third message."}]},
+                {"role": "assistant", "content": [{"type": "output_text", "text": "Response."}]}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "First message."},
+                        {"type": "text", "text": "Second message."},
+                        {"type": "text", "text": "Third message."}
+                    ]
+                },
+                {"role": "assistant", "content": "Response."}
+            ]
         });
 
         let result = responses_to_chat_request(input).unwrap();
@@ -592,6 +980,7 @@ mod tests {
 
     #[test]
     fn test_role_developer_with_array_content() {
+        // 开头的 developer 带 array content -> system
         let input = json!({
             "model": "gpt-4o",
             "input": [{
@@ -603,14 +992,12 @@ mod tests {
             }]
         });
 
+        // 开头的 developer 转为 system，但 array content 中有非文本内容会被过滤
         let expected = json!({
             "model": "gpt-4o",
             "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "You are a helpful assistant."},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
-                ]
+                "role": "system",
+                "content": "You are a helpful assistant."
             }]
         });
 
@@ -989,11 +1376,7 @@ mod tests {
                 },
                 {
                     "role": "assistant",
-                    "content": "Let me check more."
-                },
-                {
-                    "role": "assistant",
-                    "content": null,
+                    "content": "Let me check more.",
                     "tool_calls": [
                         {
                             "id": "call_3",
@@ -1217,20 +1600,80 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_reasoning_skipped() {
+    fn test_reasoning_converted_to_reasoning_content() {
         let input = json!({
             "model": "gpt-4o",
             "input": [{
                 "type": "reasoning",
                 "id": "reasoning_1",
-                "content": [{"type": "reasoning_text", "text": "Let me think..."}],
-                "summary": [{"type": "summary_text", "text": "Thought about the problem."}]
+                "summary": [{"type": "summary_text", "text": "Thought about the problem."}],
+                "content": [{"type": "reasoning_text", "text": "Let me think..."}]
             }]
         });
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": []
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "Thought about the problem.\n\nLet me think..."
+            }]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_reasoning_content_toolcalls_merged() {
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "reasoning_1",
+                    "summary": [{"type": "summary_text", "text": "Analyzed the problem."}],
+                    "content": [{"type": "reasoning_text", "text": "Let me think step by step."}]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Here is the solution."}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\": \"ls -la\"}"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\": \"cat file.txt\"}"
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "assistant",
+                "content": "Here is the solution.",
+                "reasoning_content": "Analyzed the problem.\n\nLet me think step by step.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls -la\"}"}
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"cat file.txt\"}"}
+                    }
+                ]
+            }]
         });
 
         let result = responses_to_chat_request(input).unwrap();
@@ -1406,10 +1849,9 @@ mod tests {
             "messages": [
                 {"role": "system", "content": "You are a helpful coding assistant."},
                 {"role": "user", "content": "Write a hello world function."},
-                {"role": "assistant", "content": "Sure! Here it is:"},
                 {
                     "role": "assistant",
-                    "content": null,
+                    "content": "Sure! Here it is:",
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
