@@ -384,7 +384,7 @@ pub async fn process_stream_request(
         let mut consecutive_errors: u32 = 0;
         const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
-        while let Some(result) = stream.next().await {
+        'stream: while let Some(result) = stream.next().await {
             match result {
                 Ok(Ok(event)) => {
                     consecutive_errors = 0;
@@ -426,7 +426,7 @@ pub async fn process_stream_request(
                                     Ok(()) => {}
                                     Err(error) => {
                                         tracing::warn!(msg = "SSE client disconnected, stopping stream", error = %error);
-                                        break;
+                                        break 'stream;
                                     }
                                 }
                             }
