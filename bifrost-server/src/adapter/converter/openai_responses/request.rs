@@ -239,6 +239,8 @@ fn transform_input_to_messages(
     }
 
     let mut found_non_developer = false;
+    let mut pending_tool_call_count = 0usize;
+    let mut buffered_messages: Vec<Value> = Vec::new();
 
     for item in items {
         // Extract role from the item for leading developer detection
@@ -303,6 +305,8 @@ fn transform_input_to_messages(
                     LlmMapError::Validation("function_call missing arguments".into())
                 })?;
 
+                pending_tool_call_count += 1;
+
                 let tool_call = json!({
                     "id": call_id,
                     "type": "function",
@@ -336,10 +340,27 @@ fn transform_input_to_messages(
                     "tool_call_id": call_id,
                     "content": content
                 }));
+
+                pending_tool_call_count = pending_tool_call_count.saturating_sub(1);
+                if pending_tool_call_count == 0 {
+                    messages.append(&mut buffered_messages);
+                }
             }
             Some("reasoning") => {
                 let reasoning_content = extract_reasoning_content(&obj);
                 if reasoning_content.is_empty() {
+                    continue;
+                }
+
+                if pending_tool_call_count > 0 {
+                    let mut new_msg = serde_json::Map::new();
+                    new_msg.insert("role".to_string(), Value::String("assistant".to_string()));
+                    new_msg.insert("content".to_string(), Value::Null);
+                    new_msg.insert(
+                        "reasoning_content".to_string(),
+                        Value::String(reasoning_content),
+                    );
+                    buffered_messages.push(Value::Object(new_msg));
                     continue;
                 }
 
@@ -377,6 +398,15 @@ fn transform_input_to_messages(
 
                 let transformed = transform_response_message_content(content_val)?;
 
+                // Buffer non-tool items that appear between tool calls and their results,
+                // to avoid breaking the Chat API constraint that tool messages must
+                // immediately follow the assistant message with matching tool_calls.
+                if pending_tool_call_count > 0 {
+                    let normalized_role = normalize_chat_role(role_str);
+                    buffered_messages.push(build_chat_message(normalized_role, transformed));
+                    continue;
+                }
+
                 // Try to merge content into previous assistant message with only reasoning_content
                 if role_str == "assistant"
                     && let Some(Value::Object(msg_obj)) = messages.last_mut()
@@ -406,6 +436,11 @@ fn transform_input_to_messages(
             "role": "system",
             "content": merged
         }));
+    }
+
+    // Flush any buffered messages that remain (e.g., if no function_call_output was found)
+    if !buffered_messages.is_empty() {
+        messages.append(&mut buffered_messages);
     }
 
     Ok(messages)
@@ -1883,6 +1918,146 @@ mod tests {
             "max_tokens": 500,
             "temperature": 0.5,
             "stream": false
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_developer_message_between_tool_call_and_result() {
+        // Responses API 允许在 function_call 和 function_call_output 之间插入
+        // developer 消息（如审批通知）。Chat API 不允许 tool_calls 和 tool 消息
+        // 之间有其他角色消息，因此 developer 消息应被缓冲到 tool 消息之后。
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\": \"ls\"}"
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Approved command prefix saved:\n- [\"/bin/bash\", \"-lc\", \"ls\"]"}]
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "file1.txt"
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "file1.txt"
+                },
+                {
+                    "role": "user",
+                    "content": "Approved command prefix saved:\n- [\"/bin/bash\", \"-lc\", \"ls\"]"
+                }
+            ]
+        });
+
+        let result = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_multiple_tool_calls_with_interleaved_developer() {
+        // 多个并行的 tool call 之间插入了 developer 消息，
+        // 验证 developer 被缓冲到所有 tool 结果之后
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\": \"ls\"}"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\": \"pwd\"}"
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Both commands approved."}]
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "file1.txt"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_2",
+                    "output": "/home"
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "继续"}]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}"}
+                        }
+                    ]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "file1.txt"
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_2",
+                    "content": "/home"
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Both commands approved."},
+                        {"type": "text", "text": "继续"}
+                    ]
+                }
+            ]
         });
 
         let result = responses_to_chat_request(input).unwrap();
