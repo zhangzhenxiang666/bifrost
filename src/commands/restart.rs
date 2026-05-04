@@ -7,7 +7,7 @@ use sysinfo::{Pid, System};
 use super::config_check::validate_config;
 use super::printing::print_error;
 use super::start::cmd_start_internal;
-use super::utils::{get_stored_pid, is_process_running, is_server_running};
+use super::utils::{force_kill_process, get_stored_pid, is_process_running, is_server_running};
 
 pub fn cmd_restart() -> Result<()> {
     println!("\n{}", "Bifrost - Restart Server".bold().white().on_cyan());
@@ -33,11 +33,7 @@ pub fn cmd_restart() -> Result<()> {
             }
 
             if is_process_running(pid) {
-                std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .output()
-                    .ok();
+                force_kill_process(pid);
             }
 
             let pid_file = crate::config::get_pid_file_path()?;

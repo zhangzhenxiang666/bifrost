@@ -7,7 +7,7 @@ use tar::Archive;
 
 use super::printing::{print_info, print_warning};
 use super::start::cmd_start_internal;
-use super::utils::{get_stored_pid, is_process_running, is_server_running};
+use super::utils::{force_kill_process, get_stored_pid, is_process_running, is_server_running};
 use crate::config::get_pid_file_path;
 
 const GITHUB_REPO: &str = "zhangzhenxiang666/bifrost";
@@ -18,28 +18,43 @@ struct Platform {
 
 impl Platform {
     fn detect() -> Self {
-        let os = std::process::Command::new("uname")
-            .arg("-s")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "Linux".to_string());
+        #[cfg(windows)]
+        {
+            let arch = match std::env::consts::ARCH {
+                "x86_64" => "amd64",
+                "aarch64" => "aarch64",
+                other => other,
+            };
+            Platform {
+                suffix: format!("windows-{}", arch),
+            }
+        }
 
-        let arch = std::process::Command::new("uname")
-            .arg("-m")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "x86_64".to_string());
+        #[cfg(not(windows))]
+        {
+            let os = std::process::Command::new("uname")
+                .arg("-s")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "Linux".to_string());
 
-        let suffix = match (os.as_str(), arch.as_str()) {
-            ("Linux", "x86_64") => "linux-amd64",
-            ("Linux", "aarch64") | ("Linux", "arm64") => "linux-aarch64",
-            ("Darwin", "x86_64") => "darwin-amd64",
-            ("Darwin", "arm64") => "darwin-aarch64",
-            _ => "linux-amd64",
-        };
+            let arch = std::process::Command::new("uname")
+                .arg("-m")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "x86_64".to_string());
 
-        Platform {
-            suffix: suffix.to_string(),
+            let suffix = match (os.as_str(), arch.as_str()) {
+                ("Linux", "x86_64") => "linux-amd64",
+                ("Linux", "aarch64") | ("Linux", "arm64") => "linux-aarch64",
+                ("Darwin", "x86_64") => "darwin-amd64",
+                ("Darwin", "arm64") => "darwin-aarch64",
+                _ => "linux-amd64",
+            };
+
+            Platform {
+                suffix: suffix.to_string(),
+            }
         }
     }
 }
@@ -49,7 +64,7 @@ fn get_server_binary_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(crate::config::BIFROST_DIR)
         .join("bin")
-        .join("bifrost-server")
+        .join(format!("bifrost-server{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn fetch_remote_version() -> Result<String> {
@@ -73,7 +88,8 @@ fn fetch_remote_version() -> Result<String> {
 }
 
 fn get_local_version() -> Result<semver::Version> {
-    let binary_path = get_server_binary_path().with_file_name("bifrost");
+    let binary_path =
+        get_server_binary_path().with_file_name(format!("bifrost{}", std::env::consts::EXE_SUFFIX));
     let output = std::process::Command::new(&binary_path)
         .arg("-V")
         .output()?;
@@ -119,10 +135,11 @@ fn install_binaries(temp_dir: &PathBuf, platform: &Platform) -> Result<()> {
     let install_dir = server_binary_path.parent().unwrap();
     std::fs::create_dir_all(install_dir)?;
 
-    let bifrost_src = temp_dir.join(format!("bifrost-{}", platform.suffix));
-    let server_src = temp_dir.join(format!("bifrost-server-{}", platform.suffix));
-    let bifrost_dst = install_dir.join("bifrost");
-    let server_dst = install_dir.join("bifrost-server");
+    let ext = std::env::consts::EXE_SUFFIX;
+    let bifrost_src = temp_dir.join(format!("bifrost-{}{}", platform.suffix, ext));
+    let server_src = temp_dir.join(format!("bifrost-server-{}{}", platform.suffix, ext));
+    let bifrost_dst = install_dir.join(format!("bifrost{}", ext));
+    let server_dst = install_dir.join(format!("bifrost-server{}", ext));
 
     std::fs::rename(&bifrost_src, &bifrost_dst).or_else(|_| {
         std::fs::copy(&bifrost_src, &bifrost_dst).and_then(|_| std::fs::remove_file(&bifrost_src))
@@ -186,11 +203,7 @@ pub fn cmd_upgrade() -> Result<()> {
                 attempts += 1;
             }
             if is_process_running(pid) {
-                std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .output()
-                    .ok();
+                force_kill_process(pid);
             }
             if let Ok(pid_file) = get_pid_file_path() {
                 fs::remove_file(&pid_file).ok();

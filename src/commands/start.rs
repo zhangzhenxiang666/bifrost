@@ -10,7 +10,7 @@ use super::printing::{
     print_warning,
 };
 use super::utils::{
-    STARTUP_SOCKET_ENV, ServerStartResult, create_startup_socket, get_env_proxy, get_process_info,
+    STARTUP_SOCKET_ENV, ServerStartResult, create_startup_channel, get_env_proxy, get_process_info,
     get_stored_pid, is_port_in_use, is_process_running, is_server_running, wait_for_startup_result,
 };
 use crate::config::{
@@ -154,7 +154,7 @@ port = 5564
     );
     println!();
 
-    let (listener, socket_path) = create_startup_socket()?;
+    let channel = create_startup_channel()?;
 
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
@@ -166,7 +166,7 @@ port = 5564
         .open(&stderr_path)?;
 
     let child = std::process::Command::new(&server_binary)
-        .env(STARTUP_SOCKET_ENV, socket_path.to_string_lossy().as_ref())
+        .env(STARTUP_SOCKET_ENV, &channel.address)
         .stdout(stdout_file)
         .stderr(stderr_file)
         .spawn()
@@ -177,21 +177,27 @@ port = 5564
 
     let server_pid = child.id();
 
-    let startup_failed = match wait_for_startup_result(&listener) {
+    let (startup_failed, daemon_pid) = match wait_for_startup_result(&channel) {
         Ok(result) => match result {
-            ServerStartResult::Failure { message } => Some(message),
-            ServerStartResult::Success { .. } => None,
+            ServerStartResult::Failure { message } => (Some(message), None),
+            ServerStartResult::Success { pid } => (None, Some(pid)),
         },
         Err(_) => {
             if !is_process_running(server_pid) {
-                Some("Server process terminated immediately".to_string())
+                (
+                    Some("Server process terminated immediately".to_string()),
+                    None,
+                )
             } else {
-                None
+                (None, None)
             }
         }
     };
 
-    let _ = std::fs::remove_file(&socket_path);
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file(&channel.address);
+    }
 
     if let Some(message) = startup_failed {
         print_error(&format!("Server failed to start: {}", message));
@@ -203,8 +209,20 @@ port = 5564
         return Err(anyhow::anyhow!("Server start failed: {}", message));
     }
 
-    let actual_pid =
-        get_stored_pid().context("Failed to read PID file - server may have failed to start")?;
+    let actual_pid = match daemon_pid {
+        Some(pid) => pid,
+        None => {
+            let mut pid = None;
+            for _ in 0..10 {
+                pid = get_stored_pid();
+                if pid.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            pid.context("Failed to read PID file - server may have failed to start")?
+        }
+    };
 
     print_success("Server started successfully");
     println!();

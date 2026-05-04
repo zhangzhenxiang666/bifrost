@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
 use std::net::TcpStream;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
 
@@ -17,6 +16,14 @@ pub enum ServerStartResult {
     Success { pid: u32 },
     #[serde(rename = "failure")]
     Failure { message: String },
+}
+
+pub struct StartupChannel {
+    pub address: String,
+    #[cfg(unix)]
+    listener: std::os::unix::net::UnixListener,
+    #[cfg(windows)]
+    listener: std::net::TcpListener,
 }
 
 pub fn get_stored_pid() -> Option<u32> {
@@ -84,11 +91,7 @@ pub fn stop_process(pid: u32) {
     }
 
     if is_process_running(pid) {
-        std::process::Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .output()
-            .ok();
+        force_kill_process(pid);
     }
 
     if let Ok(pid_file) = get_pid_file_path()
@@ -98,26 +101,63 @@ pub fn stop_process(pid: u32) {
     }
 }
 
-pub fn create_startup_socket() -> anyhow::Result<(std::os::unix::net::UnixListener, PathBuf)> {
-    use crate::config::get_bifrost_dir;
-    let socket_path =
-        get_bifrost_dir()?.join(format!("bifrost_startup_{}.sock", std::process::id()));
+pub fn force_kill_process(pid: u32) {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .output()
+            .ok();
+    }
 
-    let _ = std::fs::remove_file(&socket_path);
-
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path)
-        .context("Failed to create startup socket")?;
-
-    listener
-        .set_nonblocking(true)
-        .context("Failed to set non-blocking mode")?;
-
-    Ok((listener, socket_path))
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .arg("/F")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .output()
+            .ok();
+    }
 }
 
-pub fn wait_for_startup_result(
-    listener: &std::os::unix::net::UnixListener,
-) -> anyhow::Result<ServerStartResult> {
+pub fn create_startup_channel() -> anyhow::Result<StartupChannel> {
+    #[cfg(unix)]
+    {
+        use crate::config::get_bifrost_dir;
+        let socket_path =
+            get_bifrost_dir()?.join(format!("bifrost_startup_{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)
+            .context("Failed to create startup socket")?;
+        listener
+            .set_nonblocking(true)
+            .context("Failed to set non-blocking mode")?;
+        Ok(StartupChannel {
+            address: socket_path.to_string_lossy().to_string(),
+            listener,
+        })
+    }
+
+    #[cfg(windows)]
+    {
+        use std::net::TcpListener;
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").context("Failed to bind startup TCP listener")?;
+        listener
+            .set_nonblocking(true)
+            .context("Failed to set non-blocking mode")?;
+        let address = listener
+            .local_addr()
+            .context("Failed to get local address")?
+            .to_string();
+        Ok(StartupChannel { address, listener })
+    }
+}
+
+pub fn wait_for_startup_result(channel: &StartupChannel) -> anyhow::Result<ServerStartResult> {
     let deadline = Instant::now() + Duration::from_millis(500);
     let mut buffer = Vec::new();
 
@@ -126,7 +166,12 @@ pub fn wait_for_startup_result(
             return Err(anyhow::anyhow!("Timeout waiting for server startup result"));
         }
 
-        match listener.accept() {
+        #[cfg(unix)]
+        let accept_result = channel.listener.accept();
+        #[cfg(windows)]
+        let accept_result = channel.listener.accept();
+
+        match accept_result {
             Ok((mut stream, _)) => {
                 stream.read_to_end(&mut buffer)?;
                 return Ok(serde_json::from_slice(&buffer)?);
@@ -135,7 +180,7 @@ pub fn wait_for_startup_result(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("UDS accept error: {}", e));
+                return Err(anyhow::anyhow!("Startup listener accept error: {}", e));
             }
         }
     }
