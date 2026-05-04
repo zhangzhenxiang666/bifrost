@@ -10,8 +10,9 @@ use super::printing::{
     print_warning,
 };
 use super::utils::{
-    STARTUP_SOCKET_ENV, ServerStartResult, create_startup_channel, get_env_proxy, get_process_info,
-    get_stored_pid, is_port_in_use, is_process_running, is_server_running, wait_for_startup_result,
+    ExtendedStartupResult, STARTUP_SOCKET_ENV, ServerStartResult, create_startup_channel,
+    extended_startup_check, get_env_proxy, get_process_info, get_stored_pid, is_port_in_use,
+    is_server_running, wait_for_startup_result,
 };
 use crate::config::{
     BIFROST_DIR, cleanup_old_logs, cleanup_old_usage_files, get_config_path, get_logs_dir,
@@ -114,6 +115,8 @@ pub fn cmd_start_internal() -> Result<()> {
     } else {
         let default_config = r#"[server]
 port = 5564
+timeout_secs = 600
+max_retries = 5
 "#;
         fs::write(&config_path, default_config)?;
         ServerConfig::from_file(&config_path)?
@@ -182,16 +185,10 @@ port = 5564
             ServerStartResult::Failure { message } => (Some(message), None),
             ServerStartResult::Success { pid } => (None, Some(pid)),
         },
-        Err(_) => {
-            if !is_process_running(server_pid) {
-                (
-                    Some("Server process terminated immediately".to_string()),
-                    None,
-                )
-            } else {
-                (None, None)
-            }
-        }
+        Err(_) => match extended_startup_check(port, server_pid, &channel) {
+            ExtendedStartupResult::Failure { message } => (Some(message), None),
+            ExtendedStartupResult::ServerRunning => (None, None),
+        },
     };
 
     #[cfg(unix)]
@@ -218,7 +215,7 @@ port = 5564
                 if pid.is_some() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(70));
             }
             pid.context("Failed to read PID file - server may have failed to start")?
         }

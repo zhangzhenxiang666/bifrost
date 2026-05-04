@@ -185,3 +185,103 @@ pub fn wait_for_startup_result(channel: &StartupChannel) -> anyhow::Result<Serve
         }
     }
 }
+
+/// Result of an extended startup check after initial timeout.
+pub enum ExtendedStartupResult {
+    /// Server is running (port is accepting connections).
+    ServerRunning,
+    /// Server failed to start.
+    Failure { message: String },
+}
+
+/// After the startup channel times out, perform an extended check:
+///
+/// 1. Immediately try connecting to the server port.
+/// 2. If that fails, wait up to 2 seconds while checking process health,
+///    the startup channel for failure messages, and the server port.
+pub fn extended_startup_check(
+    port: u16,
+    server_pid: u32,
+    channel: &StartupChannel,
+) -> ExtendedStartupResult {
+    // 1. Immediate port check
+    if is_port_in_use(port) {
+        return ExtendedStartupResult::ServerRunning;
+    }
+
+    // 2. Process already dead?
+    if !is_process_running(server_pid) {
+        return ExtendedStartupResult::Failure {
+            message: "Server process terminated unexpectedly".to_string(),
+        };
+    }
+
+    // 3. Extended wait loop (up to 2s, checking every 500ms)
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+
+        if !is_process_running(server_pid) {
+            return ExtendedStartupResult::Failure {
+                message: "Server process terminated unexpectedly".to_string(),
+            };
+        }
+
+        // Check if server sent a startup message during the wait
+        let channel_msg = accept_startup_channel(channel);
+        if let Some(msg) = channel_msg {
+            match msg {
+                ServerStartResult::Failure { message } => {
+                    return ExtendedStartupResult::Failure { message };
+                }
+                ServerStartResult::Success { .. } => {
+                    return ExtendedStartupResult::ServerRunning;
+                }
+            }
+        }
+
+        if is_port_in_use(port) {
+            return ExtendedStartupResult::ServerRunning;
+        }
+    }
+
+    // 4. One final port check after deadline
+    if is_port_in_use(port) {
+        ExtendedStartupResult::ServerRunning
+    } else {
+        ExtendedStartupResult::Failure {
+            message: "Server failed to start within the expected time".to_string(),
+        }
+    }
+}
+
+/// Try to read a startup result from the channel without blocking indefinitely.
+fn accept_startup_channel(channel: &StartupChannel) -> Option<ServerStartResult> {
+    #[cfg(unix)]
+    let result = channel.listener.accept();
+    #[cfg(windows)]
+    let result = channel.listener.accept();
+
+    match result {
+        Ok((mut stream, _)) => {
+            let mut buf = Vec::new();
+            #[cfg(unix)]
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .ok();
+            #[cfg(windows)]
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .ok();
+            stream.read_to_end(&mut buf).ok().and_then(|_| {
+                if !buf.is_empty() {
+                    serde_json::from_slice(&buf).ok()
+                } else {
+                    None
+                }
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+        _ => None,
+    }
+}
