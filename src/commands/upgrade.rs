@@ -1,7 +1,7 @@
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use sysinfo::Pid;
 use tar::Archive;
 
@@ -130,6 +130,21 @@ fn download_and_extract(github_tag: &str, platform: &Platform) -> Result<PathBuf
     Ok(temp_dir)
 }
 
+#[cfg(windows)]
+/// Replace a binary file, handling Windows file-locking safely.
+///
+/// On Windows, a running executable cannot be overwritten in-place, but it CAN be
+/// renamed. We rename the old file to a `.old` backup first, then place the new one.
+fn replace_binary(src: &Path, dst: &Path) -> Result<()> {
+    if dst.exists() {
+        let backup = dst.with_extension("old");
+        let _ = std::fs::rename(dst, &backup);
+    }
+    std::fs::rename(src, dst)
+        .or_else(|_| std::fs::copy(src, dst).and_then(|_| std::fs::remove_file(src)))?;
+    Ok(())
+}
+
 fn install_binaries(temp_dir: &PathBuf, platform: &Platform) -> Result<()> {
     let server_binary_path = get_server_binary_path();
     let install_dir = server_binary_path.parent().unwrap();
@@ -141,12 +156,22 @@ fn install_binaries(temp_dir: &PathBuf, platform: &Platform) -> Result<()> {
     let bifrost_dst = install_dir.join(format!("bifrost{}", ext));
     let server_dst = install_dir.join(format!("bifrost-server{}", ext));
 
-    std::fs::rename(&bifrost_src, &bifrost_dst).or_else(|_| {
-        std::fs::copy(&bifrost_src, &bifrost_dst).and_then(|_| std::fs::remove_file(&bifrost_src))
-    })?;
-    std::fs::rename(&server_src, &server_dst).or_else(|_| {
-        std::fs::copy(&server_src, &server_dst).and_then(|_| std::fs::remove_file(&server_src))
-    })?;
+    #[cfg(windows)]
+    {
+        replace_binary(&bifrost_src, &bifrost_dst)?;
+        replace_binary(&server_src, &server_dst)?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&bifrost_src, &bifrost_dst).or_else(|_| {
+            std::fs::copy(&bifrost_src, &bifrost_dst)
+                .and_then(|_| std::fs::remove_file(&bifrost_src))
+        })?;
+        std::fs::rename(&server_src, &server_dst).or_else(|_| {
+            std::fs::copy(&server_src, &server_dst).and_then(|_| std::fs::remove_file(&server_src))
+        })?;
+    }
 
     std::fs::remove_dir_all(temp_dir).ok();
 
