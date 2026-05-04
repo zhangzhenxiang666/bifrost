@@ -20,21 +20,37 @@ jobs:
             os: ubuntu-latest
             suffix: linux-amd64
             use_cross: false
+            ext: ""
             archive: tar.gz
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             suffix: linux-aarch64
             use_cross: true
+            ext: ""
             archive: tar.gz
           - target: x86_64-apple-darwin
             os: macos-latest
             suffix: darwin-amd64
             use_cross: false
+            ext: ""
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
             suffix: darwin-aarch64
             use_cross: false
+            ext: ""
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            suffix: windows-amd64
+            use_cross: false
+            ext: ".exe"
+            archive: tar.gz
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            suffix: windows-aarch64
+            use_cross: false
+            ext: ".exe"
             archive: tar.gz
 
     steps:
@@ -71,15 +87,15 @@ jobs:
           mkdir -p release
           # Extract version from tag (remove 'v' prefix if present)
           VERSION="${GITHUB_REF#refs/tags/}"
-          cp target/${{ matrix.target }}/release/bifrost release/bifrost-${{ matrix.suffix }}
-          cp target/${{ matrix.target }}/release/bifrost-server release/bifrost-server-${{ matrix.suffix }}
+          cp target/${{ matrix.target }}/release/bifrost${{ matrix.ext }} release/bifrost-${{ matrix.suffix }}${{ matrix.ext }}
+          cp target/${{ matrix.target }}/release/bifrost-server${{ matrix.ext }} release/bifrost-server-${{ matrix.suffix }}${{ matrix.ext }}
 
       - name: Create archive
         shell: bash
         working-directory: release
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          tar czf bifrost-${VERSION}-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }} bifrost-server-${{ matrix.suffix }}
+          tar czf bifrost-${VERSION}-${{ matrix.suffix }}.tar.gz bifrost-${{ matrix.suffix }}${{ matrix.ext }} bifrost-server-${{ matrix.suffix }}${{ matrix.ext }}
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
