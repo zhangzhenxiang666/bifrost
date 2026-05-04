@@ -209,7 +209,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bifrost"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "bifrost-shared",
@@ -229,12 +229,11 @@ dependencies = [
  "toml",
  "unicode-width 0.1.14",
  "which",
- "whoami",
 ]
 
 [[package]]
 name = "bifrost-server"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "async-trait",
