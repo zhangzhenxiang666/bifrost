@@ -21,13 +21,12 @@ function Download-AndInstall {
     param([string]$Suffix)
 
     Write-Host "Fetching latest version..."
-    $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
     try {
-        $release = Invoke-RestMethod -Uri $apiUrl -Headers @{
-            "Accept" = "application/vnd.github+json"
-            "User-Agent" = "bifrost-install/1.0"
-        }
-        $latestTag = $release.tag_name
+        $req = [System.Net.WebRequest]::Create("https://github.com/$Repo/releases/latest")
+        $req.AllowAutoRedirect = $false
+        $resp = $req.GetResponse()
+        $latestTag = $resp.Headers["Location"] -replace ".*/tag/",""
+        $resp.Close()
     } catch {
         Write-Error "Failed to fetch latest version: $_"
         exit 1
