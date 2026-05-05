@@ -168,7 +168,7 @@ max_retries = 5
         .append(true)
         .open(&stderr_path)?;
 
-    let child = std::process::Command::new(&server_binary)
+    std::process::Command::new(&server_binary)
         .env(STARTUP_SOCKET_ENV, &channel.address)
         .stdout(stdout_file)
         .stderr(stderr_file)
@@ -178,14 +178,12 @@ max_retries = 5
             server_binary
         ))?;
 
-    let server_pid = child.id();
-
     let (startup_failed, daemon_pid) = match wait_for_startup_result(&channel) {
         Ok(result) => match result {
             ServerStartResult::Failure { message } => (Some(message), None),
             ServerStartResult::Success { pid } => (None, Some(pid)),
         },
-        Err(_) => match extended_startup_check(port, server_pid, &channel) {
+        Err(_) => match extended_startup_check(port, &channel) {
             ExtendedStartupResult::Failure { message } => (Some(message), None),
             ExtendedStartupResult::ServerRunning => (None, None),
         },

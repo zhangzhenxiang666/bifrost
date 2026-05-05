@@ -199,35 +199,27 @@ pub enum ExtendedStartupResult {
 /// 1. Immediately try connecting to the server port.
 /// 2. If that fails, wait up to 2 seconds while checking process health,
 ///    the startup channel for failure messages, and the server port.
-pub fn extended_startup_check(
-    port: u16,
-    server_pid: u32,
-    channel: &StartupChannel,
-) -> ExtendedStartupResult {
-    // 1. Immediate port check
+pub fn extended_startup_check(port: u16, channel: &StartupChannel) -> ExtendedStartupResult {
+    // 1. Immediate port check (fast path)
     if is_port_in_use(port) {
         return ExtendedStartupResult::ServerRunning;
     }
 
-    // 2. Process already dead?
-    if !is_process_running(server_pid) {
-        return ExtendedStartupResult::Failure {
-            message: "Server process terminated unexpectedly".to_string(),
-        };
+    // 2. Check if daemon PID file already exists and process is alive
+    if let Some(pid) = get_stored_pid()
+        && is_process_running(pid)
+    {
+        return ExtendedStartupResult::ServerRunning;
     }
 
-    // 3. Extended wait loop (up to 2s, checking every 500ms)
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // 3. Extended wait loop (up to 8s, polling every 200ms)
+    // The original child process always exits after daemonization (fork on Unix,
+    // respawn on Windows), so we rely on port/PID file checks instead.
+    let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(200));
 
-        if !is_process_running(server_pid) {
-            return ExtendedStartupResult::Failure {
-                message: "Server process terminated unexpectedly".to_string(),
-            };
-        }
-
-        // Check if server sent a startup message during the wait
+        // Check for failure/success messages from the startup channel
         let channel_msg = accept_startup_channel(channel);
         if let Some(msg) = channel_msg {
             match msg {
@@ -240,13 +232,25 @@ pub fn extended_startup_check(
             }
         }
 
+        // Check if server port is accepting connections
         if is_port_in_use(port) {
+            return ExtendedStartupResult::ServerRunning;
+        }
+
+        // Check if daemon PID file exists and process is alive
+        if let Some(pid) = get_stored_pid()
+            && is_process_running(pid)
+        {
             return ExtendedStartupResult::ServerRunning;
         }
     }
 
-    // 4. One final port check after deadline
+    // 4. One final port + PID check after deadline
     if is_port_in_use(port) {
+        ExtendedStartupResult::ServerRunning
+    } else if let Some(pid) = get_stored_pid()
+        && is_process_running(pid)
+    {
         ExtendedStartupResult::ServerRunning
     } else {
         ExtendedStartupResult::Failure {
