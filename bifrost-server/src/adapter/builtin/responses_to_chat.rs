@@ -35,7 +35,8 @@ impl Adapter for ResponsesToChatAdapter {
         &self,
         context: RequestContext,
     ) -> Result<RequestTransform, Self::Error> {
-        let body = responses_to_chat_request(context.body)?;
+        let (body, mappings) = responses_to_chat_request(context.body)?;
+        self.stream_processor.set_namespace_mappings(mappings);
         Ok(RequestTransform::new(body))
     }
 
@@ -43,7 +44,8 @@ impl Adapter for ResponsesToChatAdapter {
         &self,
         context: ResponseContext<'_>,
     ) -> Result<ResponseTransform, Self::Error> {
-        let converted = chat_to_responses_response(context.body)?;
+        let mappings = self.stream_processor.namespace_mappings();
+        let converted = chat_to_responses_response(context.body, &mappings)?;
         Ok(ResponseTransform::new(converted))
     }
 

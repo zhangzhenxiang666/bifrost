@@ -1,6 +1,7 @@
 //! Stream processor for converting Chat API streaming chunks to Responses API SSE events
 
 use super::state::ChatToResponsesStreamState;
+use crate::adapter::converter::openai_responses::NamespaceMappings;
 use crate::error::LlmMapError;
 use crate::model::StreamChunkTransform;
 use serde_json::{Value, json};
@@ -167,6 +168,16 @@ impl ChatToResponsesStreamProcessor {
         Self {
             stream_state: UnsafeCell::new(ChatToResponsesStreamState::new()),
         }
+    }
+
+    /// Set namespace mappings for reverse-lookup of prefixed tool call names.
+    pub fn set_namespace_mappings(&self, mappings: NamespaceMappings) {
+        self.state_mut().set_namespace_mappings(mappings);
+    }
+
+    /// Get current namespace mappings.
+    pub fn namespace_mappings(&self) -> NamespaceMappings {
+        self.state().namespace_mappings().clone()
     }
 
     /// Immutable access — use for all reads.
@@ -485,17 +496,21 @@ impl ChatToResponsesStreamProcessor {
                     tc_state.done = true;
 
                     let seq = self.state_mut().next_sequence();
+                    let mut done_item = json!({
+                        "id": tc_state.id,
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": tc_state.id,
+                        "name": tc_state.name,
+                        "arguments": tc_state.args,
+                    });
+                    if let Some(ref ns) = tc_state.namespace {
+                        done_item["namespace"] = Value::String(ns.clone());
+                    }
                     events.push(build_output_item_done_event(
                         seq,
                         tc_state.output_index,
-                        json!({
-                            "id": tc_state.id,
-                            "type": "function_call",
-                            "status": "completed",
-                            "call_id": tc_state.id,
-                            "name": tc_state.name,
-                            "arguments": tc_state.args,
-                        }),
+                        done_item,
                     ));
 
                     // 将激活的tool_call_index + 1
@@ -510,18 +525,18 @@ impl ChatToResponsesStreamProcessor {
                     tc_state.started = true;
 
                     let seq = self.state_mut().next_sequence();
-                    events.push(build_output_item_added_event(
-                        seq,
-                        output_index,
-                        json!({
-                            "id": &item_id,
-                            "type": "function_call",
-                            "status": "in_progress",
-                            "call_id": &item_id,
-                            "name": name,
-                            "arguments": ""
-                        }),
-                    ));
+                    let mut added_item = json!({
+                        "id": &item_id,
+                        "type": "function_call",
+                        "status": "in_progress",
+                        "call_id": &item_id,
+                        "name": name,
+                        "arguments": ""
+                    });
+                    if let Some(ref ns) = tc_state.namespace {
+                        added_item["namespace"] = Value::String(ns.clone());
+                    }
+                    events.push(build_output_item_added_event(seq, output_index, added_item));
                 }
 
                 let tc = self.state().get_tool_call_state(tool_index);
@@ -694,18 +709,18 @@ impl ChatToResponsesStreamProcessor {
             ));
 
             let seq = self.state_mut().next_sequence();
-            events.push(build_output_item_done_event(
-                seq,
-                output_index,
-                json!({
-                    "id": item_id,
-                    "type": "function_call",
-                    "status": "completed",
-                    "call_id": item_id,
-                    "name": func_name,
-                    "arguments": full_args
-                }),
-            ));
+            let mut done_item = json!({
+                "id": item_id,
+                "type": "function_call",
+                "status": "completed",
+                "call_id": item_id,
+                "name": func_name,
+                "arguments": full_args
+            });
+            if let Some(ref ns) = tc.namespace {
+                done_item["namespace"] = Value::String(ns.clone());
+            }
+            events.push(build_output_item_done_event(seq, output_index, done_item));
 
             self.state_mut().mark_tool_call_done(tc.index);
         }
@@ -783,14 +798,18 @@ impl ChatToResponsesStreamProcessor {
         // Function call items (all tool calls)
         for tc in self.state().tool_call_states() {
             if tc.started {
-                output_items.push(json!({
+                let mut fc_item = json!({
                     "id": tc.id,
                     "type": "function_call",
                     "status": "completed",
                     "call_id": tc.id,
                     "name": tc.name,
                     "arguments": tc.args
-                }));
+                });
+                if let Some(ref ns) = tc.namespace {
+                    fc_item["namespace"] = Value::String(ns.clone());
+                }
+                output_items.push(fc_item);
             }
         }
 

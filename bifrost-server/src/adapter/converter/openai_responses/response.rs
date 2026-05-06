@@ -3,6 +3,7 @@
 //! This module provides functions to convert Chat Completions API response format
 //! to OpenAI Responses API compatible format (non-streaming).
 
+use crate::adapter::converter::openai_responses::NamespaceMappings;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -19,7 +20,10 @@ use serde_json::{Value, json};
 ///
 /// A `Result` containing the transformed response in Responses API format,
 /// or an `LlmMapError` if the transformation fails.
-pub fn chat_to_responses_response(body: Value) -> Result<Value, LlmMapError> {
+pub fn chat_to_responses_response(
+    body: Value,
+    namespace_mappings: &NamespaceMappings,
+) -> Result<Value, LlmMapError> {
     let Value::Object(mut obj) = body else {
         return Err(LlmMapError::Validation(
             "Response body must be an object".into(),
@@ -51,7 +55,10 @@ pub fn chat_to_responses_response(body: Value) -> Result<Value, LlmMapError> {
         let Some(Value::Object(msg_obj)) = message else {
             continue;
         };
-        output.extend(build_output_items_from_message(msg_obj)?);
+        output.extend(build_output_items_from_message(
+            msg_obj,
+            namespace_mappings,
+        )?);
     }
 
     let transformed_usage = transform_usage_to_responses_format(usage);
@@ -95,6 +102,7 @@ pub fn chat_to_responses_response(body: Value) -> Result<Value, LlmMapError> {
 /// - `function_call` items (for each tool_call)
 fn build_output_items_from_message(
     msg_obj: &serde_json::Map<String, Value>,
+    namespace_mappings: &NamespaceMappings,
 ) -> Result<Vec<Value>, LlmMapError> {
     let mut items: Vec<Value> = Vec::new();
 
@@ -176,7 +184,7 @@ fn build_output_items_from_message(
 
     if let Some(Value::Array(tool_calls)) = msg_obj.get("tool_calls") {
         for tc in tool_calls {
-            if let Some(fc_item) = transform_tool_call_to_function_call(tc)? {
+            if let Some(fc_item) = transform_tool_call_to_function_call(tc, namespace_mappings)? {
                 items.push(fc_item);
             }
         }
@@ -271,7 +279,10 @@ fn transform_annotations(annotations: &[Value]) -> Value {
 ///
 /// Chat API: { id: "call_xxx", type: "function", function: { name: "...", arguments: "..." } }
 /// Responses: { id: "fc_xxx", type: "function_call", call_id: "call_xxx", name: "...", arguments: "..." }
-fn transform_tool_call_to_function_call(tc: &Value) -> Result<Option<Value>, LlmMapError> {
+fn transform_tool_call_to_function_call(
+    tc: &Value,
+    namespace_mappings: &NamespaceMappings,
+) -> Result<Option<Value>, LlmMapError> {
     let Value::Object(tc_obj) = tc else {
         return Ok(None);
     };
@@ -288,8 +299,16 @@ fn transform_tool_call_to_function_call(tc: &Value) -> Result<Option<Value>, Llm
         return Ok(None);
     };
 
-    let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let full_name = func.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = func.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Check if the tool call name has a namespace prefix; if so, split it.
+    let (final_name, namespace) =
+        if let Some((ns, short_name)) = namespace_mappings.split_name(full_name) {
+            (short_name, Some(ns))
+        } else {
+            (full_name.to_string(), None)
+        };
 
     let mut fc_item = serde_json::Map::new();
     fc_item.insert("id".to_string(), Value::String(super::create_item_id("fc")));
@@ -298,7 +317,10 @@ fn transform_tool_call_to_function_call(tc: &Value) -> Result<Option<Value>, Llm
         Value::String("function_call".to_string()),
     );
     fc_item.insert("call_id".to_string(), Value::String(call_id.to_string()));
-    fc_item.insert("name".to_string(), Value::String(name.to_string()));
+    fc_item.insert("name".to_string(), Value::String(final_name));
+    if let Some(ns) = namespace {
+        fc_item.insert("namespace".to_string(), Value::String(ns));
+    }
     fc_item.insert(
         "arguments".to_string(),
         Value::String(arguments.to_string()),
@@ -434,7 +456,7 @@ mod tests {
             }
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_abc123",
             "created_at": 1712530587,
@@ -485,7 +507,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_empty",
             "created_at": 1712530587,
@@ -519,7 +541,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_null",
             "created_at": 1712530587,
@@ -553,7 +575,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_refusal",
             "created_at": 1712530587,
@@ -595,7 +617,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_empty_refusal",
             "created_at": 1712530587,
@@ -647,7 +669,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_tool",
             "created_at": 1712530587,
@@ -705,7 +727,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_multi_tool",
             "created_at": 1712530587,
@@ -762,7 +784,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_content_tool",
             "created_at": 1712530587,
@@ -830,7 +852,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_code_interp",
             "created_at": 1712530587,
@@ -879,7 +901,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_annot",
             "created_at": 1712530587,
@@ -944,7 +966,7 @@ mod tests {
             }
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_usage",
             "created_at": 1712530587,
@@ -1000,7 +1022,7 @@ mod tests {
             }
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_no_details",
             "created_at": 1712530587,
@@ -1055,7 +1077,7 @@ mod tests {
             }
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_no_total",
             "created_at": 1712530587,
@@ -1106,7 +1128,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_no_usage",
             "created_at": 1712530587,
@@ -1150,7 +1172,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["status"], "completed");
     }
 
@@ -1172,7 +1194,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["status"], "incomplete");
     }
 
@@ -1199,7 +1221,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["status"], "completed");
     }
 
@@ -1221,7 +1243,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["status"], "incomplete");
     }
 
@@ -1235,7 +1257,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_empty",
             "created_at": 1712530587,
@@ -1270,7 +1292,7 @@ mod tests {
             "service_tier": "default"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["service_tier"], "default");
     }
 
@@ -1293,21 +1315,21 @@ mod tests {
             "system_fingerprint": "fp_12345abcde"
         });
 
-        let result = chat_to_responses_response(input).unwrap();
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         assert_eq!(result["metadata"]["system_fingerprint"], "fp_12345abcde");
     }
 
     #[test]
     fn test_invalid_body_not_object() {
         let input = json!("not an object");
-        let result = chat_to_responses_response(input);
+        let result = chat_to_responses_response(input, &NamespaceMappings::new());
         assert!(result.is_err());
     }
 
     #[test]
     fn test_invalid_body_array() {
         let input = json!([1, 2, 3]);
-        let result = chat_to_responses_response(input);
+        let result = chat_to_responses_response(input, &NamespaceMappings::new());
         assert!(result.is_err());
     }
 
@@ -1330,7 +1352,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_reasoning",
             "created_at": 1712530587,
@@ -1385,7 +1407,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_reasoning_only",
             "created_at": 1712530587,
@@ -1427,7 +1449,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_empty_reasoning",
             "created_at": 1712530587,
@@ -1502,7 +1524,7 @@ mod tests {
             }
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_full",
             "created_at": 1712530587,
@@ -1581,7 +1603,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_multimodal",
             "created_at": 1712530587,
@@ -1644,7 +1666,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_multi_choice",
             "created_at": 1712530587,
@@ -1704,7 +1726,7 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input).unwrap();
+        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_status_order",
             "created_at": 1712530587,
@@ -1733,6 +1755,187 @@ mod tests {
                         "annotations": [],
                         "logprobs": null
                     }]
+                }
+            ],
+            "parallel_tool_calls": true,
+            "tools": []
+        });
+
+        strip_output_item_ids(&mut result);
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Namespace 工具调用测试
+    // ============================================
+
+    #[test]
+    fn test_namespaced_tool_call_response() {
+        // 带 namespace prefix 的 tool_call 被拆分为 name + namespace
+        let mappings = NamespaceMappings::new();
+
+        let input = json!({
+            "id": "chatcmpl_ns_tool",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "index": 0,
+                "message": {
+                    "content": null,
+                    "refusal": null,
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__weather__get_forecast",
+                            "arguments": "{\"city\": \"Tokyo\"}"
+                        }
+                    }]
+                }
+            }],
+            "created": 1712530587,
+            "model": "gpt-4o",
+            "object": "chat.completion"
+        });
+
+        let mut result = chat_to_responses_response(input, &mappings).unwrap();
+        // Without mappings, the name should stay as-is (no namespace)
+        let expected = json!({
+            "id": "chatcmpl_ns_tool",
+            "created_at": 1712530587,
+            "model": "gpt-4o",
+            "object": "response",
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "mcp__weather__get_forecast",
+                "arguments": "{\"city\": \"Tokyo\"}",
+                "status": "completed"
+            }],
+            "parallel_tool_calls": true,
+            "tools": []
+        });
+
+        strip_output_item_ids(&mut result);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_namespaced_tool_call_with_mappings() {
+        // 带 namespace prefix 且 mappings 存在时拆分为 name + namespace
+        let mut mappings = NamespaceMappings::new();
+        mappings.add_namespace("mcp__weather__".to_string());
+
+        let input = json!({
+            "id": "chatcmpl_ns_tool2",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "index": 0,
+                "message": {
+                    "content": null,
+                    "refusal": null,
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__weather__get_forecast",
+                            "arguments": "{\"city\": \"Tokyo\"}"
+                        }
+                    }]
+                }
+            }],
+            "created": 1712530587,
+            "model": "gpt-4o",
+            "object": "chat.completion"
+        });
+
+        let mut result = chat_to_responses_response(input, &mappings).unwrap();
+        let expected = json!({
+            "id": "chatcmpl_ns_tool2",
+            "created_at": 1712530587,
+            "model": "gpt-4o",
+            "object": "response",
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "get_forecast",
+                "namespace": "mcp__weather__",
+                "arguments": "{\"city\": \"Tokyo\"}",
+                "status": "completed"
+            }],
+            "parallel_tool_calls": true,
+            "tools": []
+        });
+
+        strip_output_item_ids(&mut result);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_mixed_namespaced_and_regular_tool_calls() {
+        // 混合 namespace 和普通 tool call
+        let mut mappings = NamespaceMappings::new();
+        mappings.add_namespace("mcp__weather__".to_string());
+
+        let input = json!({
+            "id": "chatcmpl_mixed",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "index": 0,
+                "message": {
+                    "content": null,
+                    "refusal": null,
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}"
+                            }
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__weather__get_forecast",
+                                "arguments": "{\"city\": \"Paris\"}"
+                            }
+                        }
+                    ]
+                }
+            }],
+            "created": 1712530587,
+            "model": "gpt-4o",
+            "object": "chat.completion"
+        });
+
+        let mut result = chat_to_responses_response(input, &mappings).unwrap();
+        let expected = json!({
+            "id": "chatcmpl_mixed",
+            "created_at": 1712530587,
+            "model": "gpt-4o",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                    "status": "completed"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "get_forecast",
+                    "namespace": "mcp__weather__",
+                    "arguments": "{\"city\": \"Paris\"}",
+                    "status": "completed"
                 }
             ],
             "parallel_tool_calls": true,

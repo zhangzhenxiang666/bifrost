@@ -3,6 +3,8 @@
 //! This module provides the state machine for tracking Chat-to-Responses
 //! streaming event conversion state.
 
+use crate::adapter::converter::openai_responses::NamespaceMappings;
+
 /// Per-tool-call state for tracking individual tool call lifecycle in SSE output.
 ///
 /// Each tool call in a `tool_calls` array gets its own `ToolCallState` to independently
@@ -13,8 +15,10 @@ pub struct ToolCallState {
     pub index: u64,
     /// The call_id (e.g., "call_d500d156ea0245ec9a3cfcc7")
     pub id: String,
-    /// Function name
+    /// Function name (short name without namespace prefix)
     pub name: String,
+    /// Optional namespace (e.g. "mcp__weather__")
+    pub namespace: Option<String>,
     /// Accumulated arguments (JSON string)
     pub args: String,
     /// Whether `output_item.added` has been emitted for this tool
@@ -26,11 +30,18 @@ pub struct ToolCallState {
 }
 
 impl ToolCallState {
-    fn new(index: u64, id: String, name: String, output_index: u64) -> Self {
+    fn new(
+        index: u64,
+        id: String,
+        name: String,
+        namespace: Option<String>,
+        output_index: u64,
+    ) -> Self {
         Self {
             index,
             id,
             name,
+            namespace,
             args: String::new(),
             started: false,
             done: false,
@@ -58,6 +69,8 @@ pub struct ChatToResponsesStreamState {
     /// Counter for generating sequential output_index values for new output items.
     /// Starts at 0 for reasoning, increments for each new item.
     item_counter: u64,
+    /// Namespace mappings extracted from Responses API tools.
+    namespace_mappings: NamespaceMappings,
 }
 
 const CREATED_SENT: u8 = 0b0000_0001;
@@ -88,6 +101,7 @@ impl ChatToResponsesStreamState {
             item_counter: 0,
             tool_call_states: std::collections::HashMap::new(),
             active_tool_call_index: 0,
+            namespace_mappings: NamespaceMappings::new(),
         }
     }
 
@@ -107,6 +121,7 @@ impl ChatToResponsesStreamState {
         self.tool_call_states = std::collections::HashMap::new();
         self.active_tool_call_index = 0;
         self.item_counter = 0;
+        self.namespace_mappings = NamespaceMappings::new();
     }
 
     pub fn sequence_number(&self) -> u64 {
@@ -198,9 +213,17 @@ impl ChatToResponsesStreamState {
         &mut self,
         index: u64,
         id: String,
-        name: String,
+        full_name: String,
     ) -> (&mut ToolCallState, bool) {
         use std::collections::hash_map::Entry;
+
+        // Split namespace prefix from tool name if applicable.
+        let (name, namespace) =
+            if let Some((ns, short_name)) = self.namespace_mappings.split_name(&full_name) {
+                (short_name, Some(ns))
+            } else {
+                (full_name, None)
+            };
 
         // 提前计算 output_index 和存在性，避免 entry() 可变借用与 flag 读取的借用冲突
         let is_new = !self.tool_call_states.contains_key(&index);
@@ -221,7 +244,7 @@ impl ChatToResponsesStreamState {
         match self.tool_call_states.entry(index) {
             Entry::Occupied(entry) => (entry.into_mut(), false),
             Entry::Vacant(entry) => {
-                let new_tc = ToolCallState::new(index, id, name, output_index);
+                let new_tc = ToolCallState::new(index, id, name, namespace, output_index);
                 (entry.insert(new_tc), true)
             }
         }
@@ -268,6 +291,16 @@ impl ChatToResponsesStreamState {
         if let Some(tc) = self.tool_call_states.get_mut(&index) {
             tc.done = true;
         }
+    }
+
+    // ── namespace mappings ──
+
+    pub fn set_namespace_mappings(&mut self, mappings: NamespaceMappings) {
+        self.namespace_mappings = mappings;
+    }
+
+    pub fn namespace_mappings(&self) -> &NamespaceMappings {
+        &self.namespace_mappings
     }
 
     // ── token usage ──

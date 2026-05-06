@@ -3,6 +3,8 @@
 //! This module provides functions to convert OpenAI Responses API request format
 //! to Chat Completions API compatible format.
 
+use crate::adapter::converter::create_null_string;
+use crate::adapter::converter::openai_responses::NamespaceMappings;
 use crate::error::LlmMapError;
 use serde_json::{Value, json};
 
@@ -19,7 +21,7 @@ use serde_json::{Value, json};
 ///
 /// A `Result` containing the transformed request in Chat Completions format,
 /// or an `LlmMapError` if the transformation fails.
-pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
+pub fn responses_to_chat_request(body: Value) -> Result<(Value, NamespaceMappings), LlmMapError> {
     let Value::Object(mut obj) = body else {
         return Err(LlmMapError::Validation(
             "Request body must be an object".into(),
@@ -28,6 +30,7 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
 
     let instructions = obj.remove("instructions");
     let input = obj.remove("input");
+    let mut namespace_mappings = NamespaceMappings::new();
     let mut chat_messages = Vec::new();
 
     if let Some(input_val) = input {
@@ -46,7 +49,8 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
     obj.insert("messages".to_string(), Value::Array(chat_messages));
 
     if let Some(Value::Array(tools)) = obj.remove("tools") {
-        let transformed_tools = transform_tools_to_chat_format(tools);
+        let (transformed_tools, mappings) = transform_tools_to_chat_format(tools);
+        namespace_mappings = mappings;
         obj.insert("tools".to_string(), transformed_tools);
     }
 
@@ -77,7 +81,7 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, LlmMapError> {
         obj.insert("stream_options".to_string(), transformed);
     }
 
-    Ok(Value::Object(obj))
+    Ok((Value::Object(obj), namespace_mappings))
 }
 
 // --- Helpers used by multiple transform functions ---
@@ -443,6 +447,33 @@ fn transform_input_to_messages(
         messages.append(&mut buffered_messages);
     }
 
+    // Validate and fix assistant messages to comply with Chat API requirements.
+    // The Chat API requires every assistant message to have either `content` or `tool_calls`.
+    // If an assistant message has neither (e.g., from a `reasoning` item that only produced
+    // `reasoning_content` and no subsequent `content` or `tool_calls` merged in), set
+    // `content` to an empty string to satisfy the requirement.
+    for msg in &mut messages {
+        if let Some(obj) = msg.as_object_mut()
+            && obj.get("role").and_then(|v| v.as_str()) == Some("assistant")
+        {
+            let has_content = match obj.get("content") {
+                Some(Value::String(s)) => !s.is_empty(),
+                Some(Value::Array(arr)) => !arr.is_empty(),
+                Some(Value::Null) => false,
+                None => false,
+                Some(_) => true,
+            };
+            let has_tool_calls = obj.get("tool_calls").is_some()
+                && obj
+                    .get("tool_calls")
+                    .is_some_and(|v| !v.as_array().is_some_and(|a| a.is_empty()));
+
+            if !has_content && !has_tool_calls {
+                obj.insert("content".to_string(), create_null_string());
+            }
+        }
+    }
+
     Ok(messages)
 }
 
@@ -549,33 +580,75 @@ fn transform_response_message_content(content: Value) -> Result<Value, LlmMapErr
 ///
 /// Responses: {type: "function", name: "x", description: "...", parameters: {...}, strict: true}
 /// Chat:      {type: "function", function: {name: "x", description: "...", parameters: {...}, strict: true}}
-fn transform_tools_to_chat_format(tools: Vec<Value>) -> Value {
-    let transformed: Vec<Value> = tools
-        .into_iter()
-        .filter_map(|tool| {
-            let Value::Object(mut obj) = tool else {
-                return None;
-            };
+fn transform_tools_to_chat_format(tools: Vec<Value>) -> (Value, NamespaceMappings) {
+    let mut namespace_mappings = NamespaceMappings::new();
+    let mut transformed: Vec<Value> = Vec::new();
 
-            if obj.get("type").and_then(|v| v.as_str()) != Some("function") {
-                return None;
-            }
+    for tool in tools {
+        let Value::Object(mut obj) = tool else {
+            continue;
+        };
 
-            let mut func_obj = serde_json::Map::new();
-            for field in ["name", "description", "parameters", "strict"] {
-                if let Some(value) = obj.remove(field) {
-                    func_obj.insert(field.to_string(), value);
+        let tool_type = obj.get("type").and_then(|v| v.as_str());
+        match tool_type {
+            Some("function") => {
+                let mut func_obj = serde_json::Map::new();
+                for field in ["name", "description", "parameters", "strict"] {
+                    if let Some(value) = obj.remove(field) {
+                        func_obj.insert(field.to_string(), value);
+                    }
                 }
+                transformed.push(json!({
+                    "type": "function",
+                    "function": Value::Object(func_obj)
+                }));
             }
+            Some("namespace") => {
+                let Some(namespace_name) = obj
+                    .remove("name")
+                    .and_then(|v| v.as_str().map(String::from))
+                else {
+                    continue;
+                };
+                let Some(sub_tools) = obj.remove("tools").and_then(|v| v.as_array().cloned())
+                else {
+                    continue;
+                };
 
-            Some(json!({
-                "type": "function",
-                "function": Value::Object(func_obj)
-            }))
-        })
-        .collect();
+                for sub_tool in sub_tools {
+                    let Value::Object(mut sub_obj) = sub_tool else {
+                        continue;
+                    };
+                    if sub_obj.get("type").and_then(|v| v.as_str()) != Some("function") {
+                        continue;
+                    }
 
-    Value::Array(transformed)
+                    let mut func_obj = serde_json::Map::new();
+                    for field in ["name", "description", "parameters", "strict"] {
+                        if let Some(value) = sub_obj.remove(field) {
+                            func_obj.insert(field.to_string(), value);
+                        }
+                    }
+
+                    // Prefix the tool name with the namespace name.
+                    if let Some(name) = func_obj.get("name").and_then(|v| v.as_str()) {
+                        let prefixed_name = format!("{namespace_name}{name}");
+                        func_obj.insert("name".to_string(), Value::String(prefixed_name));
+                    }
+
+                    transformed.push(json!({
+                        "type": "function",
+                        "function": Value::Object(func_obj)
+                    }));
+                }
+
+                namespace_mappings.add_namespace(namespace_name);
+            }
+            _ => continue,
+        }
+    }
+
+    (Value::Array(transformed), namespace_mappings)
 }
 
 /// Transform tool_choice from Responses API format to Chat API format.
@@ -687,7 +760,7 @@ mod tests {
             "messages": [{"role": "user", "content": "Hello, how are you?"}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -715,7 +788,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -735,7 +808,7 @@ mod tests {
             "messages": [{"role": "system", "content": "You are helpful."}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -763,7 +836,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -787,7 +860,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -810,7 +883,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -841,7 +914,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -865,7 +938,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -890,7 +963,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -913,7 +986,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -929,7 +1002,7 @@ mod tests {
             "messages": [{"role": "user", "content": "Write a function."}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -961,7 +1034,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -977,7 +1050,7 @@ mod tests {
             "messages": [{"role": "assistant", "content": "Sure!"}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1009,7 +1082,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1036,7 +1109,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1065,7 +1138,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1097,7 +1170,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1126,7 +1199,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1154,7 +1227,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1187,7 +1260,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1211,7 +1284,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1264,7 +1337,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1330,7 +1403,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1428,7 +1501,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1466,7 +1539,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1502,7 +1575,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1520,7 +1593,7 @@ mod tests {
             "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1544,7 +1617,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1566,7 +1639,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1584,7 +1657,7 @@ mod tests {
             "max_tokens": 1000
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1602,7 +1675,7 @@ mod tests {
             "reasoning_effort": "medium"
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1626,7 +1699,7 @@ mod tests {
             "parallel_tool_calls": true
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1650,12 +1723,53 @@ mod tests {
             "model": "gpt-4o",
             "messages": [{
                 "role": "assistant",
-                "content": null,
+                "content": "",
                 "reasoning_content": "Thought about the problem.\n\nLet me think..."
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_reasoning_followed_by_user_without_content_or_tool_calls() {
+        // Regression test: when a reasoning item is followed by a user message
+        // (instead of an assistant message or function_call), the resulting
+        // assistant message should have content set to empty string to satisfy
+        // the Chat API requirement that assistant messages have content or tool_calls.
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Thinking step by step."}],
+                    "content": null
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "continue"}]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "Thinking step by step."
+                },
+                {
+                    "role": "user",
+                    "content": "continue"
+                }
+            ]
+        });
+
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1711,7 +1825,7 @@ mod tests {
             }]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1733,7 +1847,7 @@ mod tests {
             "messages": [{"role": "user", "content": "Read this file:"}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1753,7 +1867,7 @@ mod tests {
             "messages": [{"role": "assistant", "content": "I cannot answer that."}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1770,7 +1884,7 @@ mod tests {
             "messages": [{"role": "user", "content": "test"}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1788,7 +1902,7 @@ mod tests {
             "stream_options": {"include_usage": true, "continuous_usage_stats": true}
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1806,7 +1920,7 @@ mod tests {
             "verbosity": "high"
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1823,7 +1937,7 @@ mod tests {
             "messages": [{"role": "user", "content": "test"}]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1920,7 +2034,7 @@ mod tests {
             "stream": false
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -1975,7 +2089,7 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -2060,7 +2174,258 @@ mod tests {
             ]
         });
 
-        let result = responses_to_chat_request(input).unwrap();
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // Namespace 工具测试
+    // ============================================
+
+    #[test]
+    fn test_namespace_tools_appended() {
+        // namespace 工具展开后追加到已有 function 工具后
+        let input = json!({
+            "model": "gpt-4o",
+            "input": "test",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "type": "namespace",
+                    "name": "mcp__weather__",
+                    "description": "Weather tools",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "get_forecast",
+                            "description": "Get forecast",
+                            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                        },
+                        {
+                            "type": "function",
+                            "name": "get_alerts",
+                            "description": "Get alerts",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__weather__get_forecast",
+                        "description": "Get forecast",
+                        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__weather__get_alerts",
+                        "description": "Get alerts",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+
+        let (result, mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+        // Verify namespace mappings were extracted
+        assert_eq!(
+            mappings.split_name("mcp__weather__get_forecast"),
+            Some(("mcp__weather__".to_string(), "get_forecast".to_string()))
+        );
+        assert_eq!(mappings.split_name("get_weather"), None);
+    }
+
+    #[test]
+    fn test_namespace_only_tools() {
+        // 只有 namespace 工具，没有普通 function 工具
+        let input = json!({
+            "model": "gpt-4o",
+            "input": "test",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__fs__",
+                    "description": "File system tools",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "read_file",
+                            "description": "Read a file",
+                            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__fs__read_file",
+                        "description": "Read a file",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+                    }
+                }
+            ]
+        });
+
+        let (result, mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(
+            mappings.split_name("mcp__fs__read_file"),
+            Some(("mcp__fs__".to_string(), "read_file".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_namespace_tools_with_strict() {
+        // namespace 工具展开后保留 strict 字段
+        let input = json!({
+            "model": "gpt-4o",
+            "input": "test",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__calc__",
+                    "description": "Calculator",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "add",
+                            "strict": true,
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__calc__add",
+                        "strict": true,
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_empty_namespace_tools_skipped() {
+        // namespace 工具没有 tools 字段或 tools 为空时跳过
+        let input = json!({
+            "model": "gpt-4o",
+            "input": "test",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__empty__",
+                    "description": "Empty",
+                    "tools": []
+                },
+                {
+                    "type": "function",
+                    "name": "ping",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ping",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_non_function_in_namespace_skipped() {
+        // namespace 内部的非 function 工具被跳过
+        let input = json!({
+            "model": "gpt-4o",
+            "input": "test",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__mixed__",
+                    "description": "Mixed",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "valid_tool",
+                            "parameters": {"type": "object", "properties": {}}
+                        },
+                        {
+                            "type": "web_search",
+                            "name": "search"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__mixed__valid_tool",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 }
