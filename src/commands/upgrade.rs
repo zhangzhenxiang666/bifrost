@@ -1,7 +1,7 @@
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use sysinfo::Pid;
 use tar::Archive;
 
@@ -135,7 +135,7 @@ fn download_and_extract(github_tag: &str, platform: &Platform) -> Result<PathBuf
 ///
 /// On Windows, a running executable cannot be overwritten in-place, but it CAN be
 /// renamed. We rename the old file to a `.old` backup first, then place the new one.
-fn replace_binary(src: &Path, dst: &Path) -> Result<()> {
+fn replace_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     if dst.exists() {
         let backup = dst.with_extension("old");
         let _ = std::fs::rename(dst, &backup);
