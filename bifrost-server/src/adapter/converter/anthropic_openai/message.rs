@@ -18,7 +18,7 @@ pub fn extract_system_text(system: Value) -> String {
                     .and_then(|_| b.get("text").and_then(|t| t.as_str()))
             })
             .collect::<Vec<_>>()
-            .join(" "),
+            .join("\n\n"),
         _ => String::new(),
     }
 }
@@ -237,7 +237,11 @@ fn transform_image_block(block: &serde_json::Map<String, Value>) -> Option<Value
         .get("media_type")
         .and_then(|v| v.as_str())
         .unwrap_or("image/png");
-    let data = source.get("data").and_then(|v| v.as_str()).unwrap_or("");
+    let data = source
+        .get("data")
+        .or_else(|| source.get("url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let image_type = source
         .get("type")
         .and_then(|v| v.as_str())
@@ -357,52 +361,37 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_extract_system_text_string() {
-        let input = json!("You are a helpful assistant.");
-        let result = extract_system_text(input);
-        assert_eq!(result, "You are a helpful assistant.");
-    }
-
-    #[test]
-    fn test_extract_system_text_array_single_text() {
-        let input = json!([{"type": "text", "text": "You are a coding assistant."}]);
-        let result = extract_system_text(input);
-        assert_eq!(result, "You are a coding assistant.");
-    }
-
-    #[test]
-    fn test_extract_system_text_array_multiple_texts() {
-        let input = json!([
-            {"type": "text", "text": "First part."},
-            {"type": "text", "text": "Second part."}
-        ]);
-        let result = extract_system_text(input);
-        assert_eq!(result, "First part. Second part.");
-    }
-
-    #[test]
-    fn test_extract_system_text_ignores_non_text_blocks() {
-        let input = json!([
-            {"type": "text", "text": "Hello."},
-            {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}},
-            {"type": "text", "text": "World."}
-        ]);
-        let result = extract_system_text(input);
-        assert_eq!(result, "Hello. World.");
-    }
-
-    #[test]
-    fn test_extract_system_text_empty_array() {
-        let input = json!([]);
-        let result = extract_system_text(input);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_extract_system_text_non_string_non_array() {
-        let input = json!(123);
-        let result = extract_system_text(input);
-        assert_eq!(result, "");
+    fn test_extract_system_text_variants() {
+        for (input, expected) in [
+            (
+                json!("You are a helpful assistant."),
+                "You are a helpful assistant.",
+            ),
+            (
+                json!([{"type": "text", "text": "You are a coding assistant."}]),
+                "You are a coding assistant.",
+            ),
+            (
+                json!([
+                    {"type": "text", "text": "First part."},
+                    {"type": "text", "text": "Second part."}
+                ]),
+                "First part.\n\nSecond part.",
+            ),
+            (
+                json!([
+                    {"type": "text", "text": "Hello."},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}},
+                    {"type": "text", "text": "World."}
+                ]),
+                "Hello.\n\nWorld.",
+            ),
+            (json!([]), ""),
+            (json!(123), ""),
+        ] {
+            let result = extract_system_text(input);
+            assert_eq!(result, expected);
+        }
     }
 
     // ============================================
@@ -410,26 +399,27 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_transform_user_message_string_content() {
-        let input = json!({
-            "role": "user",
-            "content": "Hello, how are you?"
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "user");
-        assert_eq!(result[0]["content"], "Hello, how are you?");
-    }
-
-    #[test]
-    fn test_transform_user_message_array_content() {
-        let input = json!({
-            "role": "user",
-            "content": [{"type": "text", "text": "Hello!"}]
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["content"], "Hello!");
+    fn test_transform_message_content() {
+        for (input, expected) in [
+            // user with string content
+            (
+                json!({"role": "user", "content": "Hello, how are you?"}),
+                vec![json!({"role": "user", "content": "Hello, how are you?"})],
+            ),
+            // user with single text block (flattened to string)
+            (
+                json!({"role": "user", "content": [{"type": "text", "text": "Hello!"}]}),
+                vec![json!({"role": "user", "content": "Hello!"})],
+            ),
+            // assistant with string content
+            (
+                json!({"role": "assistant", "content": "I'm doing well!"}),
+                vec![json!({"role": "assistant", "content": "I'm doing well!"})],
+            ),
+        ] {
+            let result = transform_message_anthropic_to_openai(input);
+            assert_eq!(result, expected);
+        }
     }
 
     #[test]
@@ -441,101 +431,12 @@ mod tests {
                 {"type": "tool_result", "tool_use_id": "call_abc", "content": "Sunny, 25°C"}
             ]
         });
+        let expected = vec![
+            json!({"role": "tool", "tool_call_id": "call_abc", "content": "Sunny, 25°C"}),
+            json!({"role": "user", "content": "What's the weather?"}),
+        ];
         let result = transform_message_anthropic_to_openai(input);
-        // Returns [tool_message, user_message] order (tool results extracted first)
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0]["role"], "tool");
-        assert_eq!(result[0]["tool_call_id"], "call_abc");
-        assert_eq!(result[0]["content"], "Sunny, 25°C");
-        assert_eq!(result[1]["role"], "user");
-        assert_eq!(result[1]["content"], "What's the weather?");
-    }
-
-    #[test]
-    fn test_transform_assistant_message() {
-        let input = json!({
-            "role": "assistant",
-            "content": "I'm doing well!"
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "assistant");
-        assert_eq!(result[0]["content"], "I'm doing well!");
-    }
-
-    #[test]
-    fn test_transform_assistant_message_with_tool_use() {
-        let input = json!({
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Let me check."},
-                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
-            ]
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "assistant");
-        assert_eq!(result[0]["content"], "Let me check.");
-        assert!(result[0]["tool_calls"].is_array());
-        assert_eq!(result[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(
-            result[0]["tool_calls"][0]["function"]["name"],
-            "get_weather"
-        );
-    }
-
-    #[test]
-    fn test_transform_assistant_message_only_tool_use() {
-        let input = json!({
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
-            ]
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["content"], "");
-        assert_eq!(
-            result[0]["tool_calls"][0]["function"]["name"],
-            "get_weather"
-        );
-    }
-
-    #[test]
-    fn test_transform_assistant_message_with_thinking() {
-        let input = json!({
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "Let me analyze this."},
-                {"type": "text", "text": "The answer is 42."}
-            ]
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "assistant");
-        assert_eq!(result[0]["content"], "The answer is 42.");
-        assert_eq!(result[0]["reasoning_content"], "Let me analyze this.");
-    }
-
-    #[test]
-    fn test_transform_assistant_message_with_thinking_and_tool_use() {
-        let input = json!({
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "I need to check the weather."},
-                {"type": "text", "text": "Let me search."},
-                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
-            ]
-        });
-        let result = transform_message_anthropic_to_openai(input);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "assistant");
-        assert_eq!(result[0]["content"], "Let me search.");
-        assert!(result[0]["tool_calls"].is_array());
-        assert_eq!(
-            result[0]["reasoning_content"],
-            "I need to check the weather."
-        );
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -557,11 +458,14 @@ mod tests {
             json!({"type": "tool_result", "tool_use_id": "call_2", "content": "Result 2"}),
         ];
         let (remaining, tool_messages) = extract_tool_results_from_user_message(input);
-        assert_eq!(remaining, "Hello");
-        assert_eq!(tool_messages.len(), 2);
-        assert_eq!(tool_messages[0]["role"], "tool");
-        assert_eq!(tool_messages[0]["tool_call_id"], "call_1");
-        assert_eq!(tool_messages[1]["tool_call_id"], "call_2");
+        assert_eq!(remaining, json!("Hello"));
+        assert_eq!(
+            tool_messages,
+            vec![
+                json!({"role": "tool", "tool_call_id": "call_1", "content": "Result 1"}),
+                json!({"role": "tool", "tool_call_id": "call_2", "content": "Result 2"}),
+            ]
+        );
     }
 
     #[test]
@@ -571,8 +475,14 @@ mod tests {
             json!({"type": "tool_result", "tool_use_id": "call_1", "content": "Analyzed"}),
         ];
         let (remaining, tool_messages) = extract_tool_results_from_user_message(input);
-        assert!(remaining.as_array().is_some());
-        assert_eq!(tool_messages.len(), 1);
+        assert_eq!(
+            remaining,
+            json!([{"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}])
+        );
+        assert_eq!(
+            tool_messages,
+            vec![json!({"role": "tool", "tool_call_id": "call_1", "content": "Analyzed"}),]
+        );
     }
 
     #[test]
@@ -580,8 +490,11 @@ mod tests {
         let input =
             vec![json!({"type": "tool_result", "tool_use_id": "call_1", "content": "Only tool"})];
         let (remaining, tool_messages) = extract_tool_results_from_user_message(input);
-        assert!(remaining.is_null());
-        assert_eq!(tool_messages.len(), 1);
+        assert_eq!(remaining, json!(null));
+        assert_eq!(
+            tool_messages,
+            vec![json!({"role": "tool", "tool_call_id": "call_1", "content": "Only tool"}),]
+        );
     }
 
     #[test]
@@ -591,9 +504,7 @@ mod tests {
             json!({"type": "tool_result", "tool_use_id": "call_1", "content": "Result"}),
         ];
         let (remaining, _) = extract_tool_results_from_user_message(input);
-        // When there's only one text part, it becomes a string, not an array
-        // So cache_control is removed when we extract the text
-        assert_eq!(remaining, "Hello");
+        assert_eq!(remaining, json!("Hello"));
     }
 
     // ============================================
@@ -604,7 +515,7 @@ mod tests {
     fn test_transform_assistant_content_text_only() {
         let input = vec![json!({"type": "text", "text": "Hello world"})];
         let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
-        assert_eq!(content, "Hello world");
+        assert_eq!(content, json!("Hello world"));
         assert!(tool_calls.is_empty());
     }
 
@@ -614,10 +525,13 @@ mod tests {
             json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
         ];
         let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
-        assert_eq!(content, "");
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0]["id"], "call_1");
-        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+        assert_eq!(content, json!(""));
+        assert_eq!(
+            tool_calls,
+            vec![
+                json!({"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}),
+            ]
+        );
     }
 
     #[test]
@@ -628,8 +542,16 @@ mod tests {
             json!({"type": "text", "text": "Let me check."}),
         ];
         let (content, tool_calls, _) = transform_assistant_content_with_tool_use(input);
-        assert!(content.as_array().is_some());
-        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(
+            content,
+            json!([{"type": "text", "text": "The weather is"}, {"type": "text", "text": "Let me check."}])
+        );
+        assert_eq!(
+            tool_calls,
+            vec![
+                json!({"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}),
+            ]
+        );
     }
 
     #[test]
@@ -639,7 +561,7 @@ mod tests {
             json!({"type": "text", "text": "The answer is 42."}),
         ];
         let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
-        assert_eq!(content, "The answer is 42.");
+        assert_eq!(content, json!("The answer is 42."));
         assert!(tool_calls.is_empty());
         assert_eq!(reasoning, Some("Let me think about this...".to_string()));
     }
@@ -652,8 +574,13 @@ mod tests {
             json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
         ];
         let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
-        assert_eq!(content, "Let me search.");
-        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(content, json!("Let me search."));
+        assert_eq!(
+            tool_calls,
+            vec![
+                json!({"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}),
+            ]
+        );
         assert_eq!(reasoning, Some("I need to check the weather.".to_string()));
     }
 
@@ -661,7 +588,7 @@ mod tests {
     fn test_transform_assistant_content_only_thinking() {
         let input = vec![json!({"type": "thinking", "thinking": "Just thinking..."})];
         let (content, tool_calls, reasoning) = transform_assistant_content_with_tool_use(input);
-        assert_eq!(content, "");
+        assert_eq!(content, json!(""));
         assert!(tool_calls.is_empty());
         assert_eq!(reasoning, Some("Just thinking...".to_string()));
     }
@@ -685,7 +612,7 @@ mod tests {
     fn test_transform_regular_content_text() {
         let input = vec![json!({"type": "text", "text": "Hello"})];
         let result = transform_regular_content_blocks(input);
-        assert_eq!(result, "Hello");
+        assert_eq!(result, json!("Hello"));
     }
 
     #[test]
@@ -699,13 +626,9 @@ mod tests {
             }
         })];
         let result = transform_regular_content_blocks(input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr[0]["type"], "image_url");
-        assert!(
-            arr[0]["image_url"]["url"]
-                .as_str()
-                .unwrap()
-                .starts_with("data:image/png;base64,")
+        assert_eq!(
+            result,
+            json!([{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}}])
         );
     }
 
@@ -716,15 +639,17 @@ mod tests {
             json!({"type": "text", "text": "World"}),
         ];
         let result = transform_regular_content_blocks(input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(
+            result,
+            json!([{"type": "text", "text": "Hello"}, {"type": "text", "text": "World"}])
+        );
     }
 
     #[test]
     fn test_transform_regular_content_empty() {
         let input: Vec<serde_json::Value> = vec![];
         let result = transform_regular_content_blocks(input);
-        assert_eq!(result, "");
+        assert_eq!(result, json!(""));
     }
 
     // ============================================
@@ -742,10 +667,17 @@ mod tests {
             }
         })];
         let result = transform_tools_anthropic_to_openai(input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr[0]["type"], "function");
-        assert_eq!(arr[0]["function"]["name"], "get_weather");
-        assert_eq!(arr[0]["function"]["description"], "Get weather for a city");
+        assert_eq!(
+            result,
+            json!([{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }])
+        );
     }
 
     #[test]
@@ -757,13 +689,16 @@ mod tests {
             "strict": true
         })];
         let result = transform_tools_anthropic_to_openai(input);
-        // strict field is not preserved in OpenAI format (only input_schema is used)
-        assert!(
-            result[0]["function"]
-                .as_object()
-                .unwrap()
-                .get("strict")
-                .is_none()
+        assert_eq!(
+            result,
+            json!([{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }])
         );
     }
 
@@ -778,7 +713,17 @@ mod tests {
             }),
         ];
         let result = transform_tools_anthropic_to_openai(input);
-        assert_eq!(result.as_array().unwrap().len(), 1);
+        assert_eq!(
+            result,
+            json!([{
+                "type": "function",
+                "function": {
+                    "name": "valid_tool",
+                    "description": "A valid tool",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }])
+        );
     }
 
     // ============================================
@@ -786,45 +731,20 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_transform_tool_choice_auto() {
-        let input = json!({"type": "auto"});
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result, "auto");
-    }
-
-    #[test]
-    fn test_transform_tool_choice_none() {
-        let input = json!({"type": "none"});
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result, "none");
-    }
-
-    #[test]
-    fn test_transform_tool_choice_any() {
-        let input = json!({"type": "any"});
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result, "required");
-    }
-
-    #[test]
-    fn test_transform_tool_choice_specific() {
-        let input = json!({"type": "tool", "name": "get_weather"});
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result["type"], "function");
-        assert_eq!(result["function"]["name"], "get_weather");
-    }
-
-    #[test]
-    fn test_transform_tool_choice_string_passthrough() {
-        let input = json!("auto");
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result, "auto");
-    }
-
-    #[test]
-    fn test_transform_tool_choice_unknown_defaults_to_auto() {
-        let input = json!({"type": "unknown"});
-        let result = transform_tool_choice_anthropic_to_openai(input);
-        assert_eq!(result, "auto");
+    fn test_transform_tool_choice_variants() {
+        for (input, expected) in [
+            (json!({"type": "auto"}), json!("auto")),
+            (json!({"type": "none"}), json!("none")),
+            (json!({"type": "any"}), json!("required")),
+            (
+                json!({"type": "tool", "name": "get_weather"}),
+                json!({"type": "function", "function": {"name": "get_weather"}}),
+            ),
+            (json!("auto"), json!("auto")),
+            (json!({"type": "unknown"}), json!("auto")),
+        ] {
+            let result = transform_tool_choice_anthropic_to_openai(input);
+            assert_eq!(result, expected);
+        }
     }
 }

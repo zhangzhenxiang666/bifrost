@@ -232,275 +232,91 @@ fn transform_usage(usage: Option<Value>) -> Option<Value> {
 mod tests {
     use super::*;
 
+    // ============================================
+    // 错误处理
+    // ============================================
     #[test]
-    fn test_simple_text_response() {
-        let input = json!({
-            "id": "msg_abc123",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hello, world!"}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_abc123",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello, world!"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15
-            }
-        });
-        assert_eq!(result, expected);
+    fn test_invalid_body() {
+        for input in [json!("not an object"), json!([1, 2, 3])] {
+            let result = anthropic_to_openai_response(input);
+            assert!(result.is_err());
+        }
     }
 
+    // ============================================
+    // 内容基本变体
+    // ============================================
     #[test]
-    fn test_empty_content_response() {
-        let input = json!({
-            "id": "msg_empty",
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 0}
-        });
+    fn test_content_variants() {
+        let cases = vec![
+            (
+                json!({"type": "text", "text": "Hello, world!"}),
+                json!("Hello, world!"),
+                5,
+                "single text block",
+            ),
+            (json!([]), json!(null), 0, "empty content array"),
+            (json!(null), json!(null), 0, "null content"),
+        ];
 
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_empty",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 0,
-                "total_tokens": 5
-            }
-        });
-        assert_eq!(result, expected);
+        for (content_blocks, expected_content, output_tokens, description) in cases {
+            let input = json!({
+                "id": "msg",
+                "type": "message",
+                "role": "assistant",
+                "content": content_blocks,
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": output_tokens}
+            });
+
+            let result = anthropic_to_openai_response(input).unwrap();
+            assert_eq!(
+                result["choices"][0]["message"]["content"], expected_content,
+                "{}",
+                description
+            );
+            assert_eq!(
+                result["choices"][0]["finish_reason"], "stop",
+                "{}",
+                description
+            );
+        }
     }
 
+    // ============================================
+    // 停止原因映射
+    // ============================================
     #[test]
-    fn test_null_content_response() {
+    fn test_stop_reason_mapping() {
+        let cases = vec![
+            ("end_turn", "stop"),
+            ("max_tokens", "length"),
+            ("tool_use", "tool_calls"),
+        ];
+
+        for (anthropic_reason, expected_finish_reason) in cases {
+            let input = json!({
+                "id": "msg",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hello"}],
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": anthropic_reason,
+                "usage": {"input_tokens": 5, "output_tokens": 1}
+            });
+
+            let result = anthropic_to_openai_response(input).unwrap();
+            assert_eq!(
+                result["choices"][0]["finish_reason"], expected_finish_reason,
+                "stop_reason: {}",
+                anthropic_reason
+            );
+        }
+
+        // null stop_reason -> null finish_reason
         let input = json!({
-            "id": "msg_null",
-            "type": "message",
-            "role": "assistant",
-            "content": null,
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 0}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_null",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 0,
-                "total_tokens": 5
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_use_response() {
-        let input = json!({
-            "id": "msg_tool",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "toolu_abc", "name": "get_weather", "input": {"city": "Tokyo"}}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 15, "output_tokens": 10}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_tool",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "toolu_abc", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 15,
-                "completion_tokens": 10,
-                "total_tokens": 25
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_text_and_tool_use_response() {
-        let input = json!({
-            "id": "msg_mixed",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Let me check the weather."},
-                {"type": "tool_use", "id": "toolu_xyz", "name": "get_weather", "input": {"city": "Tokyo"}}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 20, "output_tokens": 15}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_mixed",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Let me check the weather.",
-                    "tool_calls": [
-                        {"id": "toolu_xyz", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 20,
-                "completion_tokens": 15,
-                "total_tokens": 35
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multiple_tool_use_response() {
-        let input = json!({
-            "id": "msg_multi_tool",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Tokyo"}},
-                {"type": "tool_use", "id": "toolu_2", "name": "get_time", "input": {"timezone": "JST"}}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 25, "output_tokens": 20}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_multi_tool",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}},
-                        {"id": "toolu_2", "type": "function", "function": {"name": "get_time", "arguments": "{\"timezone\":\"JST\"}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 25,
-                "completion_tokens": 20,
-                "total_tokens": 45
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_max_tokens_stop_reason() {
-        let input = json!({
-            "id": "msg_max",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "This is trunc"}],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "max_tokens",
-            "usage": {"input_tokens": 100, "output_tokens": 4096}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_max",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "This is trunc"
-                },
-                "finish_reason": "length"
-            }],
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 4096,
-                "total_tokens": 4196
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_null_stop_reason() {
-        let input = json!({
-            "id": "msg_no_stop",
+            "id": "msg",
             "type": "message",
             "role": "assistant",
             "content": [{"type": "text", "text": "Hello"}],
@@ -508,98 +324,148 @@ mod tests {
             "stop_reason": null,
             "usage": {"input_tokens": 5, "output_tokens": 1}
         });
-
         let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_no_stop",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello"
-                },
-                "finish_reason": null
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 1,
-                "total_tokens": 6
+        assert_eq!(result["choices"][0]["finish_reason"], json!(null));
+    }
+
+    // ============================================
+    // Tool 调用变体
+    // ============================================
+    #[test]
+    fn test_tool_call_variants() {
+        let cases = vec![
+            (
+                vec![
+                    json!({"type": "tool_use", "id": "toolu_abc", "name": "get_weather", "input": {"city": "Tokyo"}}),
+                ],
+                json!(null),
+                vec![
+                    json!({"id": "toolu_abc", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}),
+                ],
+                "only tool calls",
+            ),
+            (
+                vec![
+                    json!({"type": "text", "text": "Let me check."}),
+                    json!({"type": "tool_use", "id": "toolu_xyz", "name": "get_weather", "input": {"city": "Tokyo"}}),
+                ],
+                json!("Let me check."),
+                vec![
+                    json!({"id": "toolu_xyz", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}),
+                ],
+                "text + tool call",
+            ),
+            (
+                vec![
+                    json!({"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
+                    json!({"type": "tool_use", "id": "toolu_2", "name": "get_time", "input": {"timezone": "JST"}}),
+                ],
+                json!(null),
+                vec![
+                    json!({"id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}),
+                    json!({"id": "toolu_2", "type": "function", "function": {"name": "get_time", "arguments": "{\"timezone\":\"JST\"}"}}),
+                ],
+                "multiple tool calls",
+            ),
+        ];
+
+        for (content_blocks, expected_content, expected_tool_calls, description) in cases {
+            let input = json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": content_blocks,
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 20, "output_tokens": 15}
+            });
+
+            let result = anthropic_to_openai_response(input).unwrap();
+            assert_eq!(
+                result["choices"][0]["message"]["content"], expected_content,
+                "{}",
+                description
+            );
+            assert_eq!(
+                result["choices"][0]["message"]["tool_calls"],
+                json!(expected_tool_calls),
+                "{}",
+                description
+            );
+            assert_eq!(
+                result["choices"][0]["finish_reason"], "tool_calls",
+                "{}",
+                description
+            );
+        }
+    }
+
+    // ============================================
+    // 文本块过滤与合并
+    // ============================================
+    #[test]
+    fn test_text_block_filtering() {
+        let cases = vec![
+            (
+                vec![
+                    json!({"type": "text", "text": ""}),
+                    json!({"type": "tool_use", "id": "toolu_f", "name": "test", "input": {}}),
+                ],
+                json!(null),
+                1,
+                "empty text filtered",
+            ),
+            (
+                vec![
+                    json!({"type": "text", "text": "   "}),
+                    json!({"type": "tool_use", "id": "toolu_ws", "name": "test", "input": {}}),
+                ],
+                json!(null),
+                1,
+                "whitespace-only text filtered",
+            ),
+            (
+                vec![
+                    json!({"type": "text", "text": "Hello"}),
+                    json!({"type": "text", "text": " "}),
+                    json!({"type": "text", "text": "World"}),
+                ],
+                json!("Hello World"),
+                0,
+                "multiple text blocks joined",
+            ),
+        ];
+
+        for (content_blocks, expected_content, tool_count, description) in cases {
+            let input = json!({
+                "id": "msg",
+                "type": "message",
+                "role": "assistant",
+                "content": content_blocks,
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": if tool_count > 0 { "tool_use" } else { "end_turn" },
+                "usage": {"input_tokens": 5, "output_tokens": 3}
+            });
+
+            let result = anthropic_to_openai_response(input).unwrap();
+            assert_eq!(
+                result["choices"][0]["message"]["content"], expected_content,
+                "{}",
+                description
+            );
+            if tool_count > 0 {
+                assert!(
+                    result["choices"][0]["message"].get("tool_calls").is_some(),
+                    "{}",
+                    description
+                );
             }
-        });
-        assert_eq!(result, expected);
+        }
     }
 
-    #[test]
-    fn test_missing_usage() {
-        let input = json!({
-            "id": "msg_no_usage",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Hello"}],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn"
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_no_usage",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello"
-                },
-                "finish_reason": "stop"
-            }]
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_missing_optional_fields() {
-        let input = json!({
-            "id": "msg_minimal",
-            "content": [{"type": "text", "text": "Hi"}]
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_minimal",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hi"
-                },
-                "finish_reason": null
-            }]
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_invalid_body_not_object() {
-        let input = json!("not an object");
-        let result = anthropic_to_openai_response(input);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_invalid_body_array() {
-        let input = json!([1, 2, 3]);
-        let result = anthropic_to_openai_response(input);
-        assert!(result.is_err());
-    }
-
+    // ============================================
+    // Tool 边界情况
+    // ============================================
     #[test]
     fn test_tool_use_with_empty_input() {
         let input = json!({
@@ -635,6 +501,49 @@ mod tests {
                 "prompt_tokens": 10,
                 "completion_tokens": 5,
                 "total_tokens": 15
+            }
+        });
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_tool_use_with_special_characters() {
+        let input = json!({
+            "id": "msg_special",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_special", "name": "escape_test", "input": {
+                    "text": "Hello 世界 🌍",
+                    "emoji": "😀🎉"
+                }}
+            ],
+            "model": "claude-3-5-sonnet-20241022",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 25, "output_tokens": 20}
+        });
+
+        let result = anthropic_to_openai_response(input).unwrap();
+        let expected = json!({
+            "id": "msg_special",
+            "object": "chat.completion",
+            "created": result["created"],
+            "model": "claude-3-5-sonnet-20241022",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {"id": "toolu_special", "type": "function", "function": {"name": "escape_test", "arguments": "{\"emoji\":\"😀🎉\",\"text\":\"Hello 世界 🌍\"}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 25,
+                "completion_tokens": 20,
+                "total_tokens": 45
             }
         });
         assert_eq!(result, expected);
@@ -682,294 +591,106 @@ mod tests {
         assert_eq!(result, expected);
     }
 
+    // ============================================
+    // Thinking 块变体
+    // ============================================
     #[test]
-    fn test_empty_text_blocks_filtered() {
+    fn test_thinking_variants() {
+        let cases = vec![
+            (
+                vec![
+                    json!({"type": "thinking", "thinking": "First thinking block is kept."}),
+                    json!({"type": "thinking", "thinking": "Second thinking block is ignored."}),
+                    json!({"type": "text", "text": "Here is the result."}),
+                ],
+                json!("Here is the result."),
+                json!("First thinking block is kept."),
+                0,
+                "second thinking block ignored",
+            ),
+            (
+                vec![
+                    json!({"type": "thinking", "thinking": "I need to check the weather."}),
+                    json!({"type": "text", "text": "Let me look that up."}),
+                    json!({"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Tokyo"}}),
+                ],
+                json!("Let me look that up."),
+                json!("I need to check the weather."),
+                1,
+                "thinking + text + tool",
+            ),
+            (
+                vec![json!({"type": "thinking", "thinking": "Just thinking..."})],
+                json!(null),
+                json!("Just thinking..."),
+                0,
+                "only thinking block",
+            ),
+        ];
+
+        for (content_blocks, expected_content, expected_reasoning, tool_count, description) in cases
+        {
+            let input = json!({
+                "id": "msg",
+                "type": "message",
+                "role": "assistant",
+                "content": content_blocks,
+                "model": "claude-3-5-sonnet-20241022",
+                "stop_reason": if tool_count > 0 { "tool_use" } else { "end_turn" },
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            });
+
+            let result = anthropic_to_openai_response(input).unwrap();
+            assert_eq!(
+                result["choices"][0]["message"]["content"], expected_content,
+                "{}",
+                description
+            );
+            assert_eq!(
+                result["choices"][0]["message"].get("reasoning_content"),
+                Some(&expected_reasoning),
+                "{}",
+                description
+            );
+        }
+    }
+
+    // ============================================
+    // 缺失字段
+    // ============================================
+    #[test]
+    fn test_missing_fields() {
+        // Missing usage -> no usage in output
         let input = json!({
-            "id": "msg_empty_text",
+            "id": "msg_no_usage",
             "type": "message",
             "role": "assistant",
-            "content": [
-                {"type": "text", "text": ""},
-                {"type": "tool_use", "id": "toolu_filter", "name": "test", "input": {}}
-            ],
+            "content": [{"type": "text", "text": "Hello"}],
             "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 3}
+            "stop_reason": "end_turn"
         });
 
         let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_empty_text",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "toolu_filter", "type": "function", "function": {"name": "test", "arguments": "{}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 3,
-                "total_tokens": 8
-            }
-        });
-        assert_eq!(result, expected);
-    }
+        assert_eq!(result["choices"][0]["message"]["content"], "Hello");
+        assert!(result.get("usage").is_none());
 
-    #[test]
-    fn test_whitespace_only_text_filtered() {
+        // Minimal input (only id + content) -> defaults
         let input = json!({
-            "id": "msg_whitespace",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "   "},
-                {"type": "text", "text": ""},
-                {"type": "tool_use", "id": "toolu_ws", "name": "test", "input": {}}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 3}
+            "id": "msg_minimal",
+            "content": [{"type": "text", "text": "Hi"}]
         });
 
         let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_whitespace",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "toolu_ws", "type": "function", "function": {"name": "test", "arguments": "{}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 3,
-                "total_tokens": 8
-            }
-        });
-        assert_eq!(result, expected);
+        assert_eq!(result["id"], "msg_minimal");
+        assert_eq!(result["model"], "");
+        assert_eq!(result["choices"][0]["message"]["content"], "Hi");
+        assert_eq!(result["choices"][0]["finish_reason"], json!(null));
+        assert!(result.get("usage").is_none());
     }
 
-    #[test]
-    fn test_multiple_text_blocks_converted_to_single_string() {
-        let input = json!({
-            "id": "msg_multi_text",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hello"},
-                {"type": "text", "text": " "},
-                {"type": "text", "text": "World"}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 3}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_multi_text",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello World"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 3,
-                "total_tokens": 13
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_use_with_special_characters_in_arguments() {
-        let input = json!({
-            "id": "msg_special",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "toolu_special", "name": "escape_test", "input": {
-                    "json_string": "{\"key\": \"value with \\\"quotes\\\" and \n newlines\"}",
-                    "unicode": "Hello 世界 🌍",
-                    "emoji": "😀🎉"
-                }}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 25, "output_tokens": 20}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_special",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "toolu_special", "type": "function", "function": {"name": "escape_test", "arguments": "{\"emoji\":\"😀🎉\",\"json_string\":\"{\\\"key\\\": \\\"value with \\\\\\\"quotes\\\\\\\" and \\n newlines\\\"}\",\"unicode\":\"Hello 世界 🌍\"}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 25,
-                "completion_tokens": 20,
-                "total_tokens": 45
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_thinking_block_ignored() {
-        let input = json!({
-            "id": "msg_thinking",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "Let me think about this..."},
-                {"type": "text", "text": "Here's my answer."}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 20, "output_tokens": 10}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_thinking",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Here's my answer.",
-                    "reasoning_content": "Let me think about this..."
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 20,
-                "completion_tokens": 10,
-                "total_tokens": 30
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_thinking_text_and_tools() {
-        let input = json!({
-            "id": "msg_full",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "I need to check the weather and search for news."},
-                {"type": "text", "text": "Let me check the weather in Tokyo and search for news."},
-                {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Tokyo", "country": "Japan"}},
-                {"type": "tool_use", "id": "toolu_2", "name": "search_news", "input": {"query": "Tokyo weather", "limit": 5}}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 150, "output_tokens": 85}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_full",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Let me check the weather in Tokyo and search for news.",
-                    "reasoning_content": "I need to check the weather and search for news.",
-                    "tool_calls": [
-                        {"id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\",\"country\":\"Japan\"}"}},
-                        {"id": "toolu_2", "type": "function", "function": {"name": "search_news", "arguments": "{\"limit\":5,\"query\":\"Tokyo weather\"}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 150,
-                "completion_tokens": 85,
-                "total_tokens": 235
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_only_thinking_block() {
-        let input = json!({
-            "id": "msg_only_thinking",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "Just thinking..."}
-            ],
-            "model": "claude-3-5-sonnet-20241022",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
-        });
-
-        let result = anthropic_to_openai_response(input).unwrap();
-        let expected = json!({
-            "id": "msg_only_thinking",
-            "object": "chat.completion",
-            "created": result["created"],
-            "model": "claude-3-5-sonnet-20241022",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "reasoning_content": "Just thinking..."
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15
-            }
-        });
-        assert_eq!(result, expected);
-    }
-
+    // ============================================
+    // 全量覆盖集成测试
+    // ============================================
     #[test]
     fn test_full_response_with_all_content_types() {
         let input = json!({

@@ -745,1686 +745,545 @@ mod tests {
     use super::*;
 
     // ============================================
-    // Input 类型的测试
-    // ============================================
-
-    #[test]
-    fn test_string_input() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "Hello, how are you?"
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello, how are you?"}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mixed_input_types() {
-        // 连续的 user 消息被合并
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                "Hello!",
-                {"role": "user", "content": "How are you?"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Hello!"},
-                        {"type": "text", "text": "How are you?"}
-                    ]
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // Role 类型的测试 (text content)
-    // ============================================
-
-    #[test]
-    fn test_role_system() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{"role": "system", "content": [{"type": "input_text", "text": "You are helpful."}]}]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "system", "content": "You are helpful."}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_role_developer() {
-        // 中间的 developer -> user，连续的 user 消息被合并
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {"role": "user", "content": "Hello"},
-                {"role": "developer", "content": [{"type": "input_text", "text": "You are Codex."}]}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Hello"},
-                        {"type": "text", "text": "You are Codex."}
-                    ]
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_leading_developer_to_system() {
-        // 开头连续的 developer 消息合并到 system
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {"role": "developer", "content": [{"type": "input_text", "text": "You are a coding assistant."}]},
-                {"role": "developer", "content": [{"type": "input_text", "text": "Be concise."}]},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are a coding assistant.\n\nBe concise."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_single_leading_developer_to_system() {
-        // 单个开头的 developer 消息转为 system
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {"role": "developer", "content": [{"type": "input_text", "text": "You are helpful."}]},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_developer_mixed_leading_and_middle() {
-        // 开头的 developer 合并到 system，中间的 developer 当作 user，连续的 user 消息被合并
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {"role": "developer", "content": [{"type": "input_text", "text": "System instruction 1."}]},
-                {"role": "developer", "content": [{"type": "input_text", "text": "System instruction 2."}]},
-                {"role": "user", "content": "Hello"},
-                {"role": "developer", "content": [{"type": "input_text", "text": "Mid conversation developer."}]}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "System instruction 1.\n\nSystem instruction 2."},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Hello"},
-                        {"type": "text", "text": "Mid conversation developer."}
-                    ]
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_instructions_and_developer_merged() {
-        // instructions 和开头的 developer 消息合并为一个 system 消息
-        let input = json!({
-            "model": "gpt-4o",
-            "instructions": "You are a helpful assistant.",
-            "input": [
-                {"role": "developer", "content": [{"type": "input_text", "text": "Be concise."}]},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant.\n\nBe concise."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_instructions_and_multiple_developer_merged() {
-        // instructions 和多个开头的 developer 消息合并
-        let input = json!({
-            "model": "gpt-4o",
-            "instructions": "You are a coding assistant.",
-            "input": [
-                {"role": "developer", "content": [{"type": "input_text", "text": "Write clean code."}]},
-                {"role": "developer", "content": [{"type": "input_text", "text": "Follow best practices."}]},
-                {"role": "user", "content": "Write a function."}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are a coding assistant.\n\nWrite clean code.\n\nFollow best practices."},
-                {"role": "user", "content": "Write a function."}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_instructions_only() {
-        // 只有 instructions，没有 developer
-        let input = json!({
-            "model": "gpt-4o",
-            "instructions": "You are helpful.",
-            "input": [
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_role_user() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Write a function."}]}]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Write a function."}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_consecutive_user_messages_merged() {
-        // 连续的 user 消息应该合并为一个包含多个 content blocks 的消息
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {"role": "user", "content": [{"type": "input_text", "text": "First message."}]},
-                {"role": "user", "content": [{"type": "input_text", "text": "Second message."}]},
-                {"role": "user", "content": [{"type": "input_text", "text": "Third message."}]},
-                {"role": "assistant", "content": [{"type": "output_text", "text": "Response."}]}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "First message."},
-                        {"type": "text", "text": "Second message."},
-                        {"type": "text", "text": "Third message."}
-                    ]
-                },
-                {"role": "assistant", "content": "Response."}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_role_assistant() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Sure!"}]}]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "assistant", "content": "Sure!"}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // Role 类型的测试 (array content - text + image)
-    // ============================================
-
-    #[test]
-    fn test_role_user_with_array_content() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Text content"},
-                    {"type": "input_image", "image_url": "https://example.com/img.png"}
-                ]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Text content"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
-                ]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_role_developer_with_array_content() {
-        // 开头的 developer 带 array content -> system
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "developer",
-                "content": [
-                    {"type": "input_text", "text": "You are a helpful assistant."},
-                    {"type": "input_image", "image_url": "https://example.com/img.png"}
-                ]
-            }]
-        });
-
-        // 开头的 developer 转为 system，但 array content 中有非文本内容会被过滤
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "system",
-                "content": "You are a helpful assistant."
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_role_assistant_with_array_content() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "output_text", "text": "Here is the image:"},
-                    {"type": "input_image", "image_url": "https://example.com/result.png"}
-                ]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Here is the image:"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/result.png"}}
-                ]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // Image 详细测试
-    // ============================================
-
-    #[test]
-    fn test_input_image_base64() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-                }]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "user",
-                "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}
-                }]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_input_image_with_detail() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "image_url": "https://example.com/photo.jpg",
-                    "detail": "high"
-                }]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "user",
-                "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": "https://example.com/photo.jpg", "detail": "high"}
-                }]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multimodal_text_and_image() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Look at this image:"},
-                    {"type": "input_image", "image_url": "https://example.com/photo.jpg"}
-                ]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Look at this image:"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}}
-                ]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // 工具调用测试
-    // ============================================
-
-    #[test]
-    fn test_function_call() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "type": "function_call",
-                "call_id": "call_abc",
-                "name": "get_weather",
-                "arguments": "{\"city\": \"Tokyo\"}"
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call_abc",
-                    "type": "function",
-                    "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}
-                }]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_function_call_output() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "type": "function_call_output",
-                "call_id": "call_abc123",
-                "output": "{\"temperature\": 22}"
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "tool",
-                "tool_call_id": "call_abc123",
-                "content": "{\"temperature\": 22}"
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_function_call_and_output_flow() {
-        // 完整的 function_call -> function_call_output 流程
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "get_weather",
-                    "arguments": "{\"city\": \"Tokyo\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "{\"temperature\": 22}"
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "The weather in Tokyo is 22°C."}]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}
-                    }]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "{\"temperature\": 22}"
-                },
-                {
-                    "role": "assistant",
-                    "content": "The weather in Tokyo is 22°C."
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multiple_consecutive_function_calls_merged() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"ls -la\"}"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"cat README.md\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "total 300"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_2",
-                    "output": "# Bifrost"
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls -la\"}"}
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"cat README.md\"}"}
-                        }
-                    ]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "total 300"
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_2",
-                    "content": "# Bifrost"
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_function_call_not_merged_across_assistant_text() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"ls\"}"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"cat file\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "file1.txt"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_2",
-                    "output": "file content"
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Let me check more."}]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_3",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"grep pattern\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_3",
-                    "output": "matched line"
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"cat file\"}"}
-                        }
-                    ]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "file1.txt"
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_2",
-                    "content": "file content"
-                },
-                {
-                    "role": "assistant",
-                    "content": "Let me check more.",
-                    "tool_calls": [
-                        {
-                            "id": "call_3",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"grep pattern\"}"}
-                        }
-                    ]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_3",
-                    "content": "matched line"
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tools_format() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [{
-                "type": "function",
-                "name": "get_weather",
-                "description": "Get weather for a city",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}}
-                },
-                "strict": true
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Get weather for a city",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"city": {"type": "string"}}
-                    },
-                    "strict": true
-                }
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_non_function_tools_filtered_out() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "parameters": {"type": "object", "properties": {}}
-                },
-                {
-                    "type": "web_search",
-                    "external_web_access": false
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_choice_format() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tool_choice": {"type": "function", "name": "get_weather"}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // 其他字段转换测试
-    // ============================================
-
-    #[test]
-    fn test_instructions_as_system_message() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "Hello",
-            "instructions": "You are a helpful assistant."
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_instructions_with_array_content() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "Hello",
-            "instructions": [
-                {"type": "input_text", "text": "You are a coding assistant."}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are a coding assistant."},
-                {"role": "user", "content": "Hello"}
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_max_output_tokens() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "max_output_tokens": 1000
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "max_tokens": 1000
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_reasoning_effort() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "reasoning": {"effort": "medium"}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "reasoning_effort": "medium"
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_passthrough_fields() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "stream": true,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "parallel_tool_calls": true
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "stream": true,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "parallel_tool_calls": true
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // 跳过/忽略的内容测试
-    // ============================================
-
-    #[test]
-    fn test_reasoning_converted_to_reasoning_content() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "type": "reasoning",
-                "id": "reasoning_1",
-                "summary": [{"type": "summary_text", "text": "Thought about the problem."}],
-                "content": [{"type": "reasoning_text", "text": "Let me think..."}]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "Thought about the problem.\n\nLet me think..."
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_reasoning_followed_by_user_without_content_or_tool_calls() {
-        // Regression test: when a reasoning item is followed by a user message
-        // (instead of an assistant message or function_call), the resulting
-        // assistant message should have content set to empty string to satisfy
-        // the Chat API requirement that assistant messages have content or tool_calls.
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": "Thinking step by step."}],
-                    "content": null
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "continue"}]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "Thinking step by step."
-                },
-                {
-                    "role": "user",
-                    "content": "continue"
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_reasoning_content_toolcalls_merged() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "reasoning",
-                    "id": "reasoning_1",
-                    "summary": [{"type": "summary_text", "text": "Analyzed the problem."}],
-                    "content": [{"type": "reasoning_text", "text": "Let me think step by step."}]
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Here is the solution."}]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"ls -la\"}"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"cat file.txt\"}"
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": "Here is the solution.",
-                "reasoning_content": "Analyzed the problem.\n\nLet me think step by step.",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls -la\"}"}
-                    },
-                    {
-                        "id": "call_2",
-                        "type": "function",
-                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"cat file.txt\"}"}
-                    }
-                ]
-            }]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_input_file_skipped() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Read this file:"},
-                    {"type": "input_file", "file_id": "file_123", "filename": "doc.pdf"}
-                ]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Read this file:"}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_refusal_converted_to_text() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [{
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "refusal", "text": "I cannot answer that."}]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "assistant", "content": "I cannot answer that."}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_stream_options_filter_obfuscation() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "stream_options": {"include_obfuscation": true}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_stream_options_preserved() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "stream_options": {"include_usage": true, "continuous_usage_stats": true}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "stream_options": {"include_usage": true, "continuous_usage_stats": true}
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_text_verbosity_to_verbosity() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "text": {"verbosity": "high"}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "verbosity": "high"
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_text_format_dropped() {
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "text": {"format": {"type": "json_schema", "json_schema": {"name": "test"}}}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // 完整流程测试
+    //  Full Integration / Smoke Test
     // ============================================
 
     #[test]
     fn test_full_conversation_with_tools() {
         let input = json!({
             "model": "gpt-4o",
-            "instructions": "You are a helpful coding assistant.",
-            "input": [
-                {"role": "user", "content": "Write a hello world function."},
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Sure! Here it is:"}]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "write_file",
-                    "arguments": "{\"filename\": \"hello.py\", \"content\": \"print('Hello, World!')\"}"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "File written successfully."
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "I've written the hello world function for you."}]
-                }
-            ],
+            "input": "Hello",
+            "instructions": "You are a helpful assistant.",
             "tools": [{
                 "type": "function",
-                "name": "write_file",
-                "description": "Write content to a file",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string"},
-                        "content": {"type": "string"}
-                    }
-                },
-                "strict": true
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
             }],
-            "tool_choice": {"type": "function", "name": "write_file"},
-            "max_output_tokens": 500,
-            "temperature": 0.5,
-            "stream": false
+            "tool_choice": { "type": "function", "name": "get_weather" },
+            "reasoning": { "effort": "medium" },
+            "max_output_tokens": 1000,
+            "stream": true,
+            "temperature": 0.7
         });
 
         let expected = json!({
             "model": "gpt-4o",
             "messages": [
-                {"role": "system", "content": "You are a helpful coding assistant."},
-                {"role": "user", "content": "Write a hello world function."},
-                {
-                    "role": "assistant",
-                    "content": "Sure! Here it is:",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write_file",
-                            "arguments": "{\"filename\": \"hello.py\", \"content\": \"print('Hello, World!')\"}"
-                        }
-                    }]
-                },
-                {"role": "tool", "tool_call_id": "call_1", "content": "File written successfully."},
-                {"role": "assistant", "content": "I've written the hello world function for you."}
+                { "role": "system", "content": "You are a helpful assistant." },
+                { "role": "user", "content": "Hello" }
             ],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Write content to a file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "filename": {"type": "string"},
-                            "content": {"type": "string"}
-                        }
-                    },
-                    "strict": true
-                }
-            }],
-            "tool_choice": {"type": "function", "function": {"name": "write_file"}},
-            "max_tokens": 500,
-            "temperature": 0.5,
-            "stream": false
+            "tools": [{ "type": "function", "function": { "name": "get_weather", "description": "Get weather for a city", "parameters": { "type": "object", "properties": { "city": { "type": "string" } } } } }],
+            "tool_choice": { "type": "function", "function": { "name": "get_weather" } },
+            "reasoning_effort": "medium",
+            "max_tokens": 1000,
+            "stream": true,
+            "temperature": 0.7
         });
 
         let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
+    // ============================================
+    //  Input Parsing
+    // ============================================
+
     #[test]
-    fn test_developer_message_between_tool_call_and_result() {
-        // Responses API 允许在 function_call 和 function_call_output 之间插入
-        // developer 消息（如审批通知）。Chat API 不允许 tool_calls 和 tool 消息
-        // 之间有其他角色消息，因此 developer 消息应被缓冲到 tool 消息之后。
+    fn test_input_parsing() {
+        // String input
+        let input = json!({ "model": "gpt-4o", "input": "Hello, how are you?" });
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Hello, how are you?" }]
+        });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "string input");
+
+        // Mixed input: string + user message → merged
+        let input = json!({ "model": "gpt-4o", "input": ["Hello!", { "role": "user", "content": "How are you?" }] });
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Hello!" },
+                    { "type": "text", "text": "How are you?" }
+                ]
+            }]
+        });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "mixed string + user message");
+
+        // Only instructions, no input
+        let input = json!({ "model": "gpt-4o", "instructions": "Be helpful." });
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "system", "content": "Be helpful." }]
+        });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions only");
+    }
+
+    // ============================================
+    //  Role Mapping
+    // ============================================
+
+    #[test]
+    fn test_role_mapping() {
+        // system
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [{
+                "role": "system",
+                "content": [{ "type": "input_text", "text": "You are helpful." }]
+            }]
+        });
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "system", "content": "You are helpful." }]
+        });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "system role");
+
+        // user
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [{
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Hello" }]
+            }]
+        });
+        let expected =
+            json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "user role");
+
+        // assistant
+        let input = json!({
+            "model": "gpt-4o",
+            "input": [{
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Sure!" }]
+            }]
+        });
+        let expected =
+            json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": "Sure!" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "assistant role");
+
+        // middle developer → user (merged with preceding user)
         let input = json!({
             "model": "gpt-4o",
             "input": [
+                { "role": "user", "content": "Hello" },
                 {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"ls\"}"
-                },
-                {
-                    "type": "message",
                     "role": "developer",
-                    "content": [{"type": "input_text", "text": "Approved command prefix saved:\n- [\"/bin/bash\", \"-lc\", \"ls\"]"}]
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "file1.txt"
+                    "content": [{ "type": "input_text", "text": "You are Codex." }]
                 }
             ]
         });
-
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
-                    }]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "file1.txt"
-                },
-                {
-                    "role": "user",
-                    "content": "Approved command prefix saved:\n- [\"/bin/bash\", \"-lc\", \"ls\"]"
-                }
-            ]
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Hello" },
+                    { "type": "text", "text": "You are Codex." }
+                ]
+            }]
         });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "middle developer → user");
+    }
 
+    #[test]
+    fn test_developer_role_handling() {
+        // Multiple leading developers → system
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "You are a coding assistant." }] }, { "role": "developer", "content": [{ "type": "input_text", "text": "Be concise." }] }, { "role": "user", "content": "Hello" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a coding assistant.\n\nBe concise." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "multiple leading developers");
+
+        // Single leading developer → system
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "You are helpful." }] }, { "role": "user", "content": "Hello" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are helpful." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "single leading developer");
+
+        // Mixed leading + middle developer
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "System instruction 1." }] }, { "role": "developer", "content": [{ "type": "input_text", "text": "System instruction 2." }] }, { "role": "user", "content": "Hello" }, { "role": "developer", "content": [{ "type": "input_text", "text": "Middle developer text." }] }, { "role": "user", "content": "Continue" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "System instruction 1.\n\nSystem instruction 2." }, { "role": "user", "content": [{ "type": "text", "text": "Hello" }, { "type": "text", "text": "Middle developer text." }, { "type": "text", "text": "Continue" }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "mixed leading + middle");
+    }
+
+    // ============================================
+    //  Instructions
+    // ============================================
+
+    #[test]
+    fn test_instructions_handling() {
+        // String instructions
+        let input = json!({ "model": "gpt-4o", "input": "Hello", "instructions": "You are a helpful assistant." });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a helpful assistant." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions as string");
+
+        // Array instructions
+        let input = json!({ "model": "gpt-4o", "input": "Hello", "instructions": [{ "type": "input_text", "text": "You are a coding assistant." }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a coding assistant." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions as array");
+
+        // Instructions + leading developer merged
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "Be concise." }] }, { "role": "user", "content": "Hello" }], "instructions": "You are a coding assistant." });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a coding assistant.\n\nBe concise." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions + developer");
+
+        // Instructions + multiple leading developers
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "Be concise." }] }, { "role": "developer", "content": [{ "type": "input_text", "text": "Use simple language." }] }, { "role": "user", "content": "Hello" }], "instructions": "You are a coding assistant." });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a coding assistant.\n\nBe concise.\n\nUse simple language." }, { "role": "user", "content": "Hello" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions + multiple developers");
+
+        // Only instructions (no input)
+        let input = json!({ "model": "gpt-4o", "instructions": "Just instructions." });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "Just instructions." }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "instructions only");
+    }
+
+    // ============================================
+    //  Consecutive Message Merging
+    // ============================================
+
+    #[test]
+    fn test_consecutive_user_messages_merged() {
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "system", "content": [{ "type": "input_text", "text": "You are helpful." }] }, { "role": "user", "content": [{ "type": "input_text", "text": "First message." }] }, { "role": "user", "content": [{ "type": "input_text", "text": "Second message." }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are helpful." }, { "role": "user", "content": [{ "type": "text", "text": "First message." }, { "type": "text", "text": "Second message." }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    //  Content Block Conversion
+    // ============================================
+
+    #[test]
+    fn test_content_blocks() {
+        // User with text + image
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "Text content" }, { "type": "input_image", "image_url": "https://example.com/img.png" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Text content" }, { "type": "image_url", "image_url": { "url": "https://example.com/img.png" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "user with text + image");
+
+        // Assistant with text + image
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Here is the image:" }, { "type": "input_image", "image_url": "https://example.com/result.png" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": [{ "type": "text", "text": "Here is the image:" }, { "type": "image_url", "image_url": { "url": "https://example.com/result.png" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "assistant with text + image");
+
+        // Image with base64 data
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "base64 image");
+
+        // Image with detail
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "user", "content": [{ "type": "input_image", "image_url": "https://example.com/photo.jpg", "detail": "high" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "https://example.com/photo.jpg", "detail": "high" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "image with detail");
+
+        // Multimodal text + image
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "Look at this image:" }, { "type": "input_image", "image_url": "https://example.com/photo.jpg" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Look at this image:" }, { "type": "image_url", "image_url": { "url": "https://example.com/photo.jpg" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "multimodal text + image");
+    }
+
+    #[test]
+    fn test_developer_content_filtering() {
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "developer", "content": [{ "type": "input_text", "text": "You are a helpful assistant." }, { "type": "input_image", "image_url": "https://example.com/img.png" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "system", "content": "You are a helpful assistant." }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    //  Tool Calls
+    // ============================================
+
+    #[test]
+    fn test_tool_calls() {
+        // Single function_call
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_abc", "name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_abc", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "single function_call");
+
+        // Single function_call_output
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call_output", "call_id": "call_abc123", "output": "{\"temperature\": 22}" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "tool", "tool_call_id": "call_abc123", "content": "{\"temperature\": 22}" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "single function_call_output");
+
+        // Full flow: function_call → output → assistant
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}" }, { "type": "function_call_output", "call_id": "call_1", "output": "{\"temperature\": 22}" }, { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "The weather in Tokyo is 22°C." }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}" } }] }, { "role": "tool", "tool_call_id": "call_1", "content": "{\"temperature\": 22}" }, { "role": "assistant", "content": "The weather in Tokyo is 22°C." }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "full call→output→response");
+    }
+
+    #[test]
+    fn test_multiple_consecutive_function_calls_merged() {
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": "{\"cmd\": \"ls -la\"}" }, { "type": "function_call", "call_id": "call_2", "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"ls -la\"}" } }, { "id": "call_2", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_function_call_not_merged_across_assistant_text() {
+        // Two separate function_call flows separated by an assistant text message.
+        // The second function_call is merged into the preceding assistant text.
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" }, { "type": "function_call_output", "call_id": "call_1", "output": "file1.txt" }, { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Result shown." }] }, { "type": "function_call", "call_id": "call_2", "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" }, { "type": "function_call_output", "call_id": "call_2", "output": "/home" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" } }] }, { "role": "tool", "tool_call_id": "call_1", "content": "file1.txt" }, { "role": "assistant", "content": "Result shown.", "tool_calls": [{ "id": "call_2", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" } }] }, { "role": "tool", "tool_call_id": "call_2", "content": "/home" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    //  Tool Configuration
+    // ============================================
+
+    #[test]
+    fn test_tools_configuration() {
+        // Basic tools format
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "function", "name": "get_weather", "description": "Get weather", "parameters": { "type": "object", "properties": {} } }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "tools": [{ "type": "function", "function": { "name": "get_weather", "description": "Get weather", "parameters": { "type": "object", "properties": {} } } }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "tools format");
+
+        // Non-function tools filtered
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "function", "name": "get_weather", "description": "Get weather", "parameters": { "type": "object", "properties": {} } }, { "type": "web_search", "external_web_access": false }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "tools": [{ "type": "function", "function": { "name": "get_weather", "description": "Get weather", "parameters": { "type": "object", "properties": {} } } }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "non-function filtered");
+
+        // tool_choice function object
+        let input = json!({ "model": "gpt-4o", "input": "test", "tool_choice": { "type": "function", "name": "get_weather" } });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "tool_choice": { "type": "function", "function": { "name": "get_weather" } } });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "tool_choice function");
+
+        // tool_choice auto/none strings
+        for choice in ["auto", "none"] {
+            let input = json!({ "model": "gpt-4o", "input": "test", "tool_choice": choice });
+            let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "tool_choice": choice });
+            let (result, _mappings) = responses_to_chat_request(input).unwrap();
+            assert_eq!(result, expected, "tool_choice: {choice}");
+        }
+    }
+
+    // ============================================
+    //  Namespace Tools
+    // ============================================
+
+    #[test]
+    fn test_namespace_tools() {
+        // Appended after regular function tools
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "function", "name": "get_weather", "description": "Get weather", "parameters": { "type": "object", "properties": {} } }, { "type": "namespace", "name": "mcp__weather__", "tools": [{ "type": "function", "name": "get_forecast", "parameters": { "type": "object", "properties": { "city": { "type": "string" } } } }] }] });
+        let (result, mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(
+            result["tools"].as_array().unwrap().len(),
+            2,
+            "namespace appended"
+        );
+        assert_eq!(
+            result["tools"][1]["function"]["name"],
+            "mcp__weather__get_forecast"
+        );
+        assert_eq!(
+            mappings.split_name("mcp__weather__get_forecast"),
+            Some(("mcp__weather__".into(), "get_forecast".into()))
+        );
+
+        // Only namespace tools
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "namespace", "name": "mcp__fs__", "tools": [{ "type": "function", "name": "read_file", "parameters": { "type": "object", "properties": { "path": { "type": "string" } } } }] }] });
+        let (result, mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(
+            result["tools"].as_array().unwrap().len(),
+            1,
+            "only namespace"
+        );
+        assert_eq!(result["tools"][0]["function"]["name"], "mcp__fs__read_file");
+        assert_eq!(
+            mappings.split_name("mcp__fs__read_file"),
+            Some(("mcp__fs__".into(), "read_file".into()))
+        );
+
+        // With strict field
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "namespace", "name": "mcp__calc__", "tools": [{ "type": "function", "name": "add", "strict": true, "parameters": { "type": "object", "properties": {} } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(
+            result["tools"][0]["function"]["strict"], true,
+            "strict preserved"
+        );
+
+        // Empty namespace skipped
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "namespace", "name": "mcp__empty__", "tools": [] }, { "type": "function", "name": "ping", "parameters": { "type": "object", "properties": {} } }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(
+            result["tools"].as_array().unwrap().len(),
+            1,
+            "empty namespace"
+        );
+
+        // Non-function in namespace skipped
+        let input = json!({ "model": "gpt-4o", "input": "test", "tools": [{ "type": "namespace", "name": "mcp__mixed__", "tools": [{ "type": "function", "name": "valid_tool", "parameters": { "type": "object", "properties": {} } }, { "type": "web_search", "name": "search" }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(
+            result["tools"].as_array().unwrap().len(),
+            1,
+            "mixed namespace"
+        );
+        assert_eq!(
+            result["tools"][0]["function"]["name"],
+            "mcp__mixed__valid_tool"
+        );
+    }
+
+    // ============================================
+    //  Field Mapping
+    // ============================================
+
+    #[test]
+    fn test_field_mapping() {
+        // max_output_tokens → max_tokens
+        let input = json!({ "model": "gpt-4o", "input": "test", "max_output_tokens": 1000 });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "max_tokens": 1000 });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "max_output_tokens → max_tokens");
+
+        // reasoning.effort → reasoning_effort
+        let input =
+            json!({ "model": "gpt-4o", "input": "test", "reasoning": { "effort": "medium" } });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "reasoning_effort": "medium" });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "reasoning.effort");
+
+        // Passthrough fields
+        let input = json!({ "model": "gpt-4o", "input": "test", "stream": true, "temperature": 0.7, "top_p": 0.9, "parallel_tool_calls": true });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "stream": true, "temperature": 0.7, "top_p": 0.9, "parallel_tool_calls": true });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "passthrough");
+    }
+
+    #[test]
+    fn test_stream_options() {
+        // include_obfuscation + useful field → filtered
+        let input = json!({ "model": "gpt-4o", "input": "test", "stream_options": { "include_obfuscation": true, "foo": "bar" } });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "stream_options": { "foo": "bar" } });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "obfuscation filtered");
+
+        // Only include_obfuscation → removed
+        let input = json!({ "model": "gpt-4o", "input": "test", "stream_options": { "include_obfuscation": true } });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert!(
+            !result.as_object().unwrap().contains_key("stream_options"),
+            "empty stream_options removed"
+        );
+
+        // Useful fields preserved
+        let input = json!({ "model": "gpt-4o", "input": "test", "stream_options": { "include_usage": true } });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "stream_options": { "include_usage": true } });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "include_usage");
+    }
+
+    // ============================================
+    //  Reasoning Content
+    // ============================================
+
+    #[test]
+    fn test_reasoning() {
+        // Basic reasoning → reasoning_content
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "reasoning", "summary": [{ "type": "summary_text", "text": "Thought about the problem." }], "content": [{ "type": "reasoning_text", "text": "Let me think..." }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": "", "reasoning_content": "Thought about the problem.\n\nLet me think..." }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "basic reasoning");
+
+        // Reasoning + content + tool_calls merged
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "reasoning", "summary": [{ "type": "summary_text", "text": "Analyzed." }], "content": [{ "type": "reasoning_text", "text": "Step by step." }] }, { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Solution." }] }, { "type": "function_call", "call_id": "c1", "name": "exec", "arguments": "{}" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": "Solution.", "reasoning_content": "Analyzed.\n\nStep by step.", "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "exec", "arguments": "{}" } }] }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "reasoning + content + tool_calls");
+    }
+
+    #[test]
+    fn test_reasoning_followed_by_user() {
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "reasoning", "summary": [{ "type": "summary_text", "text": "Thinking step by step." }], "content": null }, { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "continue" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": "", "reasoning_content": "Thinking step by step." }, { "role": "user", "content": "continue" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ============================================
+    //  Skipped / Converted Content
+    // ============================================
+
+    #[test]
+    fn test_skipped_and_converted_content() {
+        // input_file skipped
+        let input = json!({ "model": "gpt-4o", "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "Read this file:" }, { "type": "input_file", "file_id": "f123" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "Read this file:" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "input_file skipped");
+
+        // refusal → text
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "message", "role": "assistant", "content": [{ "type": "refusal", "text": "I cannot answer that." }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": "I cannot answer that." }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "refusal → text");
+    }
+
+    #[test]
+    fn test_text_format_and_verbosity() {
+        // text.verbosity → verbosity
+        let input = json!({ "model": "gpt-4o", "input": "test", "text": { "verbosity": "high" } });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }], "verbosity": "high" });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "text.verbosity");
+
+        // text.format dropped
+        let input =
+            json!({ "model": "gpt-4o", "input": "test", "text": { "format": { "type": "text" } } });
+        let expected =
+            json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "test" }] });
+        let (result, _mappings) = responses_to_chat_request(input).unwrap();
+        assert_eq!(result, expected, "text.format dropped");
+    }
+
+    // ============================================
+    //  Complex Orchestration
+    // ============================================
+
+    #[test]
+    fn test_developer_between_tool_call_and_result() {
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" }, { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "Approved." }] }, { "type": "function_call_output", "call_id": "call_1", "output": "file1.txt" }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" } }] }, { "role": "tool", "tool_call_id": "call_1", "content": "file1.txt" }, { "role": "user", "content": "Approved." }] });
         let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_multiple_tool_calls_with_interleaved_developer() {
-        // 多个并行的 tool call 之间插入了 developer 消息，
-        // 验证 developer 被缓冲到所有 tool 结果之后
-        let input = json!({
-            "model": "gpt-4o",
-            "input": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"ls\"}"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "exec_command",
-                    "arguments": "{\"cmd\": \"pwd\"}"
-                },
-                {
-                    "type": "message",
-                    "role": "developer",
-                    "content": [{"type": "input_text", "text": "Both commands approved."}]
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "file1.txt"
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_2",
-                    "output": "/home"
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "继续"}]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "function",
-                            "function": {"name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}"}
-                        }
-                    ]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "file1.txt"
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_2",
-                    "content": "/home"
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Both commands approved."},
-                        {"type": "text", "text": "继续"}
-                    ]
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // Namespace 工具测试
-    // ============================================
-
-    #[test]
-    fn test_namespace_tools_appended() {
-        // namespace 工具展开后追加到已有 function 工具后
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "parameters": {"type": "object", "properties": {}}
-                },
-                {
-                    "type": "namespace",
-                    "name": "mcp__weather__",
-                    "description": "Weather tools",
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "get_forecast",
-                            "description": "Get forecast",
-                            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
-                        },
-                        {
-                            "type": "function",
-                            "name": "get_alerts",
-                            "description": "Get alerts",
-                            "parameters": {"type": "object", "properties": {}}
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "description": "Get weather",
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "mcp__weather__get_forecast",
-                        "description": "Get forecast",
-                        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "mcp__weather__get_alerts",
-                        "description": "Get alerts",
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                }
-            ]
-        });
-
-        let (result, mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-        // Verify namespace mappings were extracted
-        assert_eq!(
-            mappings.split_name("mcp__weather__get_forecast"),
-            Some(("mcp__weather__".to_string(), "get_forecast".to_string()))
-        );
-        assert_eq!(mappings.split_name("get_weather"), None);
-    }
-
-    #[test]
-    fn test_namespace_only_tools() {
-        // 只有 namespace 工具，没有普通 function 工具
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "namespace",
-                    "name": "mcp__fs__",
-                    "description": "File system tools",
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "read_file",
-                            "description": "Read a file",
-                            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "mcp__fs__read_file",
-                        "description": "Read a file",
-                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
-                    }
-                }
-            ]
-        });
-
-        let (result, mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-        assert_eq!(
-            mappings.split_name("mcp__fs__read_file"),
-            Some(("mcp__fs__".to_string(), "read_file".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_namespace_tools_with_strict() {
-        // namespace 工具展开后保留 strict 字段
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "namespace",
-                    "name": "mcp__calc__",
-                    "description": "Calculator",
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "add",
-                            "strict": true,
-                            "parameters": {"type": "object", "properties": {}}
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "mcp__calc__add",
-                        "strict": true,
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_empty_namespace_tools_skipped() {
-        // namespace 工具没有 tools 字段或 tools 为空时跳过
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "namespace",
-                    "name": "mcp__empty__",
-                    "description": "Empty",
-                    "tools": []
-                },
-                {
-                    "type": "function",
-                    "name": "ping",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "ping",
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                }
-            ]
-        });
-
-        let (result, _mappings) = responses_to_chat_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_non_function_in_namespace_skipped() {
-        // namespace 内部的非 function 工具被跳过
-        let input = json!({
-            "model": "gpt-4o",
-            "input": "test",
-            "tools": [
-                {
-                    "type": "namespace",
-                    "name": "mcp__mixed__",
-                    "description": "Mixed",
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "valid_tool",
-                            "parameters": {"type": "object", "properties": {}}
-                        },
-                        {
-                            "type": "web_search",
-                            "name": "search"
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "test"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "mcp__mixed__valid_tool",
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                }
-            ]
-        });
-
+        let input = json!({ "model": "gpt-4o", "input": [{ "type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" }, { "type": "function_call", "call_id": "call_2", "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" }, { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "Both approved." }] }, { "type": "function_call_output", "call_id": "call_1", "output": "file1.txt" }, { "type": "function_call_output", "call_id": "call_2", "output": "/home" }, { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Continue" }] }] });
+        let expected = json!({ "model": "gpt-4o", "messages": [{ "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}" } }, { "id": "call_2", "type": "function", "function": { "name": "exec_command", "arguments": "{\"cmd\": \"pwd\"}" } }] }, { "role": "tool", "tool_call_id": "call_1", "content": "file1.txt" }, { "role": "tool", "tool_call_id": "call_2", "content": "/home" }, { "role": "user", "content": [{ "type": "text", "text": "Both approved." }, { "type": "text", "text": "Continue" }] }] });
         let (result, _mappings) = responses_to_chat_request(input).unwrap();
         assert_eq!(result, expected);
     }

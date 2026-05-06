@@ -212,14 +212,11 @@ mod tests {
     #[test]
     fn test_basic_user_message() {
         let input = vec![json!({"role": "user", "content": "Hello"})];
+        let expected =
+            vec![json!({"role": "user", "content": [{"type": "text", "text": "Hello"}]})];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "user");
-        let content = result[0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 1);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[0]["text"], "Hello");
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -228,9 +225,10 @@ mod tests {
             json!({"role": "system", "content": "You are helpful."}),
             json!({"role": "user", "content": "Hi"}),
         ];
+        let expected = vec![json!({"role": "user", "content": [{"type": "text", "text": "Hi"}]})];
         let (system, result) = transform_openai_messages(input);
         assert_eq!(system, Some("You are helpful.".to_string()));
-        assert_eq!(result.len(), 1);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -242,12 +240,13 @@ mod tests {
                 {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}}
             ]
         })];
+        let expected = vec![json!({"role": "assistant", "content": [
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
+        ]})];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
-        assert_eq!(result.len(), 1);
-        let content = result[0]["content"].as_array().unwrap();
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -262,13 +261,18 @@ mod tests {
             }),
             json!({"role": "tool", "tool_call_id": "call_1", "content": "Sunny, 25°C"}),
         ];
+        let expected = vec![
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "Checking..."},
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"}
+            ]}),
+        ];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1]["role"], "user");
-        let content = result[1]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 1);
-        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -285,12 +289,20 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "call_1", "content": "Sunny"}),
             json!({"role": "tool", "tool_call_id": "call_2", "content": "10:00"}),
         ];
+        let expected = vec![
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "Checking both..."},
+                {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}},
+                {"type": "tool_use", "id": "call_2", "name": "get_time", "input": {}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"},
+                {"type": "tool_result", "tool_use_id": "call_2", "content": "10:00"}
+            ]}),
+        ];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1]["role"], "user");
-        let content = result[1]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -349,14 +361,10 @@ mod tests {
             json!({"role": "user", "content": "Hello"}),
             json!({"role": "user", "content": "World"}),
         ];
-        let expected = json!([
-            {"role": "user", "content": [
-                {"type": "text", "text": "Hello"},
-                {"type": "text", "text": "World"}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
+        let expected = vec![json!({"role": "user", "content": [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": "World"}
+        ]})];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
         assert_eq!(result, expected);
@@ -371,15 +379,11 @@ mod tests {
                 {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
             ]}),
         ];
-        let expected = json!([
-            {"role": "user", "content": [
-                {"type": "text", "text": "Hello"},
-                {"type": "text", "text": "World"},
-                {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
+        let expected = vec![json!({"role": "user", "content": [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": "World"},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}}
+        ]})];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
         assert_eq!(result, expected);
@@ -397,22 +401,20 @@ mod tests {
             json!({"role": "user", "content": [{"type": "text", "text": "Continue"}]}),
             json!({"role": "user", "content": [{"type": "text", "text": "Continue"}, {"type": "image_url", "image_url": {"url": "https://example.com/cont.png"}}]}),
         ];
-        let expected = json!([
-            {"role": "assistant", "content": [
+        let expected = vec![
+            json!({"role": "assistant", "content": [
                 {"type": "text", "text": "Let me check."},
                 {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
-            ]},
-            {"role": "user", "content": [
+            ]}),
+            json!({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"},
                 {"type": "text", "text": "Thanks!"},
                 {"type": "text", "text": "Continue"},
                 {"type": "text", "text": "Continue"},
                 {"type": "text", "text": "Continue"},
                 {"type": "image", "source": {"type": "url", "url": "https://example.com/cont.png"}}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
+            ]}),
+        ];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
         assert_eq!(result, expected);
@@ -425,55 +427,48 @@ mod tests {
             json!({"role": "assistant", "content": "Reply"}),
             json!({"role": "user", "content": "Second"}),
         ];
-        let expected = json!([
-            {"role": "user", "content": [{"type": "text", "text": "First"}]},
-            {"role": "assistant", "content": [{"type": "text", "text": "Reply"}]},
-            {"role": "user", "content": [{"type": "text", "text": "Second"}]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
+        let expected = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "First"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "Reply"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "Second"}]}),
+        ];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
         assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_assistant_with_reasoning_content() {
-        let input = vec![json!({
-            "role": "assistant",
-            "content": "The answer is 42.",
-            "reasoning_content": "Let me think about this step by step..."
-        })];
-        let expected = json!([
-            {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "Let me think about this step by step..."},
-                {"type": "text", "text": "The answer is 42."}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
+    fn test_assistant_reasoning_content() {
+        let cases = vec![
+            (
+                json!({"role": "assistant", "content": "The answer is 42.", "reasoning_content": "Let me think..."}),
+                json!({"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Let me think..."},
+                    {"type": "text", "text": "The answer is 42."}
+                ]}),
+                "thinking + text",
+            ),
+            (
+                json!({"role": "assistant", "content": "Hello!", "reasoning_content": ""}),
+                json!({"role": "assistant", "content": [
+                    {"type": "text", "text": "Hello!"}
+                ]}),
+                "empty reasoning filtered out",
+            ),
+            (
+                json!({"role": "assistant", "reasoning_content": "Thinking about the problem..."}),
+                json!({"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Thinking about the problem..."}
+                ]}),
+                "only reasoning, no content",
+            ),
+        ];
 
-        let (system, result) = transform_openai_messages(input);
-        assert!(system.is_none());
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_assistant_with_empty_reasoning_content() {
-        let input = vec![json!({
-            "role": "assistant",
-            "content": "Hello!",
-            "reasoning_content": ""
-        })];
-        let expected = json!([
-            {"role": "assistant", "content": [
-                {"type": "text", "text": "Hello!"}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
-        let (system, result) = transform_openai_messages(input);
-        assert!(system.is_none());
-        assert_eq!(result, expected);
+        for (input_msg, expected_msg, description) in cases {
+            let (system, result) = transform_openai_messages(vec![input_msg]);
+            assert!(system.is_none());
+            assert_eq!(result, vec![expected_msg], "{}", description);
+        }
     }
 
     #[test]
@@ -486,33 +481,11 @@ mod tests {
                 {"id": "call_1", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"weather Tokyo\"}"}}
             ]
         })];
-        let expected = json!([
-            {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "I need to find information about the weather."},
-                {"type": "text", "text": "Let me search for that."},
-                {"type": "tool_use", "id": "call_1", "name": "web_search", "input": {"query": "weather Tokyo"}}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
-        let (system, result) = transform_openai_messages(input);
-        assert!(system.is_none());
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_assistant_with_only_reasoning_content() {
-        let input = vec![json!({
-            "role": "assistant",
-            "reasoning_content": "Thinking about the problem..."
-        })];
-        let expected = json!([
-            {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "Thinking about the problem..."}
-            ]}
-        ]);
-        let expected: Vec<Value> = serde_json::from_value(expected).unwrap();
-
+        let expected = vec![json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "I need to find information about the weather."},
+            {"type": "text", "text": "Let me search for that."},
+            {"type": "tool_use", "id": "call_1", "name": "web_search", "input": {"query": "weather Tokyo"}}
+        ]})];
         let (system, result) = transform_openai_messages(input);
         assert!(system.is_none());
         assert_eq!(result, expected);

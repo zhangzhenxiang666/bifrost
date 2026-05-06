@@ -129,288 +129,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_basic_user_message() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_system_extraction() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hi"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "system": "You are helpful.",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_assistant_with_tool_calls() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": "Let me check.",
-                "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}}
-                ]
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Let me check."},
-                    {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}}
-                ]
-            }],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_results_merged() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "assistant", "content": "Checking...", "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
-                ]},
-                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny, 25°C"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "Checking..."},
-                    {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
-                ]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"}]}
-            ],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multiple_tool_results() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "assistant", "content": "Checking both...", "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}},
-                    {"id": "call_2", "type": "function", "function": {"name": "get_time", "arguments": "{}"}}
-                ]},
-                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"},
-                {"role": "tool", "tool_call_id": "call_2", "content": "10:00"}
-            ]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "Checking both..."},
-                    {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}},
-                    {"type": "tool_use", "id": "call_2", "name": "get_time", "input": {}}
-                ]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"},
-                    {"type": "tool_result", "tool_use_id": "call_2", "content": "10:00"}
-                ]}
-            ],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_full_conversation_flow() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "user", "content": "What's the weather in Tokyo and can you run ls command?"},
-                {"role": "assistant", "content": "I'll check both for you.", "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Tokyo\"}"}},
-                    {"id": "call_2", "type": "function", "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}}
-                ]},
-                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny, 25°C"},
-                {"role": "tool", "tool_call_id": "call_2", "content": "total 300\ndrwxr-xr-x  5 user  4096 Apr 17 10:00 ."},
-                {"role": "assistant", "content": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."},
-                {"role": "user", "content": "Thanks!"},
-                {"role": "assistant", "content": "You're welcome!"}
-            ],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Get weather for a city",
-                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
-                }
-            }],
-            "tool_choice": "required",
-            "reasoning_effort": "high",
-            "max_tokens": 1024,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "stream": false
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "What's the weather in Tokyo and can you run ls command?"}]},
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "I'll check both for you."},
-                    {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Tokyo"}},
-                    {"type": "tool_use", "id": "call_2", "name": "exec_command", "input": {"cmd": "ls"}}
-                ]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny, 25°C"},
-                    {"type": "tool_result", "tool_use_id": "call_2", "content": "total 300\ndrwxr-xr-x  5 user  4096 Apr 17 10:00 ."}
-                ]},
-                {"role": "assistant", "content": [{"type": "text", "text": "The weather in Tokyo is sunny, 25°C. And ls shows the directory has 5 items."}]},
-                {"role": "user", "content": [{"type": "text", "text": "Thanks!"}]},
-                {"role": "assistant", "content": [{"type": "text", "text": "You're welcome!"}]}
-            ],
-            "tools": [{
-                "name": "get_weather",
-                "description": "Get weather for a city",
-                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
-            }],
-            "tool_choice": {"type": "any"},
-            "output_config": {"effort": "high"},
-            "max_tokens": 1024,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "stream": false
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tools_transform() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Get weather for a city",
-                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
-                }
-            }]
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-            "tools": [{
-                "name": "get_weather",
-                "description": "Get weather for a city",
-                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
-            }],
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_choice_required() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tool_choice": "required"
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-            "tool_choice": {"type": "any"},
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_choice_none() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tool_choice": "none"
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-            "tool_choice": {"type": "none"},
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_tool_choice_function() {
-        let input = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
-        });
-
-        let expected = json!({
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-            "tool_choice": {"type": "tool", "name": "get_weather"},
-            "max_tokens": 4096
-        });
-
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
     fn test_non_object_body_error() {
         let input = json!("not an object");
         let result = transform_request(input);
@@ -446,7 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn test_max_completion_tokens() {
+    fn test_max_tokens_handling() {
+        // max_completion_tokens maps to max_tokens when max_tokens is absent
         let input = json!({
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Hello"}],
@@ -459,12 +178,9 @@ mod tests {
             "max_tokens": 2048
         });
 
-        let result = transform_request(input).unwrap();
-        assert_eq!(result, expected);
-    }
+        assert_eq!(transform_request(input).unwrap(), expected);
 
-    #[test]
-    fn test_max_tokens_priority_over_max_completion_tokens() {
+        // max_tokens takes priority over max_completion_tokens
         let input = json!({
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Hello"}],
@@ -476,6 +192,134 @@ mod tests {
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
             "max_tokens": 1024
+        });
+
+        assert_eq!(transform_request(input).unwrap(), expected);
+
+        // Default max_tokens when neither is specified
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "max_tokens": 4096
+        });
+
+        assert_eq!(transform_request(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_tools_transform() {
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+            }],
+            "max_tokens": 4096
+        });
+
+        let result = transform_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_tool_choice() {
+        // String variants
+        let cases = [
+            ("required", json!({"type": "any"})),
+            ("none", json!({"type": "none"})),
+            ("auto", json!({"type": "auto"})),
+            ("unknown", json!({"type": "auto"})),
+        ];
+        for (choice, expected_choice) in cases {
+            let input = json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tool_choice": choice
+            });
+
+            let expected = json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+                "tool_choice": expected_choice,
+                "max_tokens": 4096
+            });
+
+            let result = transform_request(input).unwrap();
+            assert_eq!(result, expected, "tool_choice string: {}", choice);
+        }
+
+        // Function object variant
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "tool_choice": {"type": "tool", "name": "get_weather"},
+            "max_tokens": 4096
+        });
+
+        assert_eq!(transform_request(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_full_conversation_integration() {
+        // Smoke test covering all orchestration features
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello"}
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }],
+            "tool_choice": "required",
+            "reasoning_effort": "high",
+            "temperature": 0.7,
+            "stream": false
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "system": "You are a helpful assistant.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "tools": [{
+                "name": "get_weather",
+                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+            }],
+            "tool_choice": {"type": "any"},
+            "output_config": {"effort": "high"},
+            "max_tokens": 4096,
+            "temperature": 0.7,
+            "stream": false
         });
 
         let result = transform_request(input).unwrap();

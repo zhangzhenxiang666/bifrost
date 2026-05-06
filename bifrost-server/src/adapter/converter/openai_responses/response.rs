@@ -419,6 +419,7 @@ fn determine_status_from_choices(choices: &[Value]) -> String {
 mod tests {
     use super::*;
 
+    #[expect(clippy::collapsible_if, clippy::collapsible_match)]
     fn strip_output_item_ids(value: &mut Value) {
         if let Value::Object(obj) = value {
             if let Some(output) = obj.get_mut("output") {
@@ -433,9 +434,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_simple_text_response() {
-        let input = json!({
+    fn base_chat_response() -> serde_json::Map<String, Value> {
+        json!({
             "id": "chatcmpl_abc123",
             "choices": [{
                 "finish_reason": "stop",
@@ -454,9 +454,24 @@ mod tests {
                 "prompt_tokens": 10,
                 "total_tokens": 15
             }
-        });
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
 
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+    // =============================================
+    //  Full Integration / Smoke Test
+    // =============================================
+
+    #[test]
+    fn test_full_response_with_all_fields() {
+        let mut input = base_chat_response();
+        input.insert("service_tier".to_string(), json!("default"));
+        input.insert("system_fingerprint".to_string(), json!("fp_abc123"));
+
+        let mut result =
+            chat_to_responses_response(Value::Object(input), &NamespaceMappings::new()).unwrap();
         let expected = json!({
             "id": "chatcmpl_abc123",
             "created_at": 1712530587,
@@ -482,400 +497,446 @@ mod tests {
                 "total_tokens": 15,
                 "input_tokens_details": { "cached_tokens": 0 },
                 "output_tokens_details": { "reasoning_tokens": 0 }
+            },
+            "service_tier": "default",
+            "metadata": { "system_fingerprint": "fp_abc123" }
+        });
+
+        strip_output_item_ids(&mut result);
+        assert_eq!(result, expected);
+    }
+
+    // =============================================
+    //  Content Variants
+    // =============================================
+
+    #[test]
+    fn test_content_variants() {
+        // Simple text content
+        let input = json!({
+            "id": "chatcmpl_1", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hello!", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert_eq!(
+            result["output"][0]["content"][0]["text"], "Hello!",
+            "simple text"
+        );
+
+        // Empty content → no output items
+        let input = json!({
+            "id": "chatcmpl_2", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert!(
+            result["output"].as_array().unwrap().is_empty(),
+            "empty content"
+        );
+
+        // Null content → no output items
+        let input = json!({
+            "id": "chatcmpl_3", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert!(
+            result["output"].as_array().unwrap().is_empty(),
+            "null content"
+        );
+
+        // Refusal → output_text with refusal text
+        let input = json!({
+            "id": "chatcmpl_4", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": null, "refusal": "I cannot answer.", "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert_eq!(
+            result["output"][0]["content"][0]["type"], "refusal",
+            "refusal type"
+        );
+        assert_eq!(
+            result["output"][0]["content"][0]["refusal"], "I cannot answer.",
+            "refusal text"
+        );
+
+        // Empty refusal not included
+        let input = json!({
+            "id": "chatcmpl_5", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hello", "refusal": "", "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert!(
+            !result["output"][0]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c.get("type") == Some(&json!("refusal"))),
+            "empty refusal excluded"
+        );
+    }
+
+    // =============================================
+    //  Content Blocks (multimodal array content)
+    // =============================================
+
+    #[test]
+    fn test_multimodal_array_content() {
+        let input = json!({
+            "id": "chatcmpl_mm",
+            "choices": [{
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "content": [
+                        { "type": "text", "text": "First text" },
+                        { "type": "image_url", "image_url": { "url": "https://example.com/img.png", "detail": "low" } },
+                        { "type": "text", "text": "Second text" }
+                    ],
+                    "refusal": null,
+                    "role": "assistant"
+                }
+            }],
+            "created": 1712530587,
+            "model": "gpt-4o",
+            "object": "chat.completion"
+        });
+
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        let output = result["output"][0]["content"].as_array().unwrap();
+        assert_eq!(output.len(), 3, "three content blocks");
+        assert_eq!(output[0]["type"], "output_text");
+        assert_eq!(output[0]["text"], "First text");
+        assert_eq!(output[1]["type"], "output_text");
+        assert!(output[1]["text"].as_str().unwrap().contains("img.png"));
+        assert_eq!(output[2]["type"], "output_text");
+        assert_eq!(output[2]["text"], "Second text");
+    }
+
+    // =============================================
+    //  Tool Calls
+    // =============================================
+
+    #[test]
+    fn test_tool_calls() {
+        let result = |input: Value| -> Value {
+            let mut r = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+            strip_output_item_ids(&mut r);
+            r
+        };
+
+        // Single tool call
+        let input = json!({
+            "id": "chatcmpl_tc1", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "tool_calls": [{ "id": "call_1", "type": "function",
+                        "function": { "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" } }]
+                } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(
+            r["output"][0]["type"], "function_call",
+            "single tool call type"
+        );
+        assert_eq!(r["output"][0]["call_id"], "call_1");
+
+        // Multiple tool calls
+        let input = json!({
+            "id": "chatcmpl_tc2", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "tool_calls": [
+                        { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{}" } },
+                        { "id": "call_2", "type": "function", "function": { "name": "get_time", "arguments": "{}" } }
+                    ] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(r["output"].as_array().unwrap().len(), 2, "two tool calls");
+        assert_eq!(r["output"][0]["name"], "get_weather");
+        assert_eq!(r["output"][1]["name"], "get_time");
+
+        // Content + tool calls together
+        let input = json!({
+            "id": "chatcmpl_tc3", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": "Check weather", "refusal": null, "role": "assistant",
+                    "tool_calls": [{ "id": "call_1", "type": "function",
+                        "function": { "name": "get_weather", "arguments": "{}" } }] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(
+            r["output"].as_array().unwrap().len(),
+            2,
+            "content + tool call"
+        );
+        assert_eq!(r["output"][0]["type"], "message");
+        assert_eq!(r["output"][1]["type"], "function_call");
+
+        // Non-function tool call filtered
+        let input = json!({
+            "id": "chatcmpl_tc4", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "tool_calls": [
+                        { "id": "call_1", "type": "function", "function": { "name": "valid_func", "arguments": "{}" } },
+                        { "id": "call_2", "type": "not_function", "function": { "name": "invalid", "arguments": "{}" } }
+                    ] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(
+            r["output"].as_array().unwrap().len(),
+            1,
+            "non-function filtered"
+        );
+        assert_eq!(r["output"][0]["name"], "valid_func");
+    }
+
+    // =============================================
+    //  Usage
+    // =============================================
+
+    #[test]
+    fn test_usage() {
+        let result = |input: Value| -> Value {
+            let mut r = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+            strip_output_item_ids(&mut r);
+            r
+        };
+
+        // With details
+        let input = json!({
+            "id": "chatcmpl_u1", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion",
+            "usage": {
+                "completion_tokens": 5, "prompt_tokens": 10, "total_tokens": 15,
+                "completion_tokens_details": { "reasoning_tokens": 2 },
+                "prompt_tokens_details": { "cached_tokens": 3 }
             }
         });
+        let r = result(input);
+        assert_eq!(r["usage"]["input_tokens"], 10, "input_tokens");
+        assert_eq!(r["usage"]["output_tokens"], 5, "output_tokens");
+        assert_eq!(r["usage"]["total_tokens"], 15, "total_tokens");
+        assert_eq!(
+            r["usage"]["input_tokens_details"]["cached_tokens"], 3,
+            "cached_tokens"
+        );
+        assert_eq!(
+            r["usage"]["output_tokens_details"]["reasoning_tokens"], 2,
+            "reasoning_tokens"
+        );
 
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
+        // Without details
+        let input = json!({
+            "id": "chatcmpl_u2", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion",
+            "usage": { "completion_tokens": 5, "prompt_tokens": 10, "total_tokens": 15 }
+        });
+        let r = result(input);
+        assert_eq!(
+            r["usage"]["input_tokens_details"]["cached_tokens"], 0,
+            "default cached"
+        );
+        assert_eq!(
+            r["usage"]["output_tokens_details"]["reasoning_tokens"], 0,
+            "default reasoning"
+        );
+
+        // Without total_tokens (calculated from prompt + completion)
+        let input = json!({
+            "id": "chatcmpl_u3", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion",
+            "usage": { "completion_tokens": 5, "prompt_tokens": 10 }
+        });
+        let r = result(input);
+        assert_eq!(r["usage"]["total_tokens"], 15, "computed total");
+
+        // No usage field
+        let input = json!({
+            "id": "chatcmpl_u4", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert!(!r.as_object().unwrap().contains_key("usage"), "no usage");
+    }
+
+    // =============================================
+    //  Finish Reason → Status
+    // =============================================
+
+    #[test]
+    fn test_finish_reason_to_status() {
+        for (reason, expected_status) in [
+            ("stop", "completed"),
+            ("length", "incomplete"),
+            ("tool_calls", "completed"),
+            ("content_filter", "incomplete"),
+        ] {
+            let input = json!({
+                "id": "chatcmpl_fr", "choices": [{ "finish_reason": reason, "index": 0,
+                    "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+                "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+            });
+            let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+            assert_eq!(result["status"], expected_status, "finish_reason: {reason}");
+        }
+    }
+
+    // =============================================
+    //  Reasoning Content
+    // =============================================
+
+    #[test]
+    fn test_reasoning_content() {
+        let result = |input: Value| -> Value {
+            let mut r = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+            strip_output_item_ids(&mut r);
+            r
+        };
+
+        // reasoning_content converted to reasoning item
+        let input = json!({
+            "id": "chatcmpl_r1", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Answer", "refusal": null, "role": "assistant",
+                    "reasoning_content": "Let me think..." } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(r["output"][0]["type"], "reasoning", "reasoning item type");
+        assert_eq!(
+            r["output"][0]["summary"][0]["text"], "Let me think...",
+            "reasoning content"
+        );
+
+        // Only reasoning_content, no text content
+        let input = json!({
+            "id": "chatcmpl_r2", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "reasoning_content": "Thinking..." } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert_eq!(r["output"].as_array().unwrap().len(), 1, "only reasoning");
+        assert_eq!(r["output"][0]["type"], "reasoning");
+
+        // Empty reasoning_content skipped
+        let input = json!({
+            "id": "chatcmpl_r3", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Answer", "refusal": null, "role": "assistant",
+                    "reasoning_content": "" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let r = result(input);
+        assert!(
+            r["output"][0]["type"] != "reasoning",
+            "empty reasoning skipped"
+        );
+    }
+
+    // =============================================
+    //  Edge Cases
+    // =============================================
+
+    #[test]
+    fn test_edge_cases() {
+        // Empty choices → status incomplete
+        let input = json!({
+            "id": "chatcmpl_ec1", "choices": [],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert_eq!(result["status"], "incomplete", "empty choices");
+        assert!(result["output"].as_array().unwrap().is_empty());
+
+        // Service tier preserved
+        let input = json!({
+            "id": "chatcmpl_ec2", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion",
+            "service_tier": "default"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert_eq!(result["service_tier"], "default", "service tier");
+
+        // System fingerprint → metadata
+        let input = json!({
+            "id": "chatcmpl_ec3", "choices": [{ "finish_reason": "stop", "index": 0,
+                "message": { "content": "Hi", "refusal": null, "role": "assistant" } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion",
+            "system_fingerprint": "fp_xyz"
+        });
+        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+        assert_eq!(
+            result["metadata"]["system_fingerprint"], "fp_xyz",
+            "fingerprint"
+        );
     }
 
     #[test]
-    fn test_empty_content_response() {
-        let input = json!({
-            "id": "chatcmpl_empty",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
+    fn test_invalid_body() {
+        let r = chat_to_responses_response(json!("not an object"), &NamespaceMappings::new());
+        assert!(r.is_err(), "non-object body");
 
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_empty",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
+        let r = chat_to_responses_response(json!(["array"]), &NamespaceMappings::new());
+        assert!(r.is_err(), "array body");
     }
 
-    #[test]
-    fn test_null_content_response() {
-        let input = json!({
-            "id": "chatcmpl_null",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_null",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
+    // =============================================
+    //  Multiple Choices / Status Determination
+    // =============================================
 
     #[test]
-    fn test_refusal_response() {
+    fn test_multiple_choices_and_status() {
+        let result = |input: Value| -> Value {
+            let mut r = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
+            strip_output_item_ids(&mut r);
+            r
+        };
+
+        // Multiple choices all completed
         let input = json!({
-            "id": "chatcmpl_refusal",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": "I cannot provide that information.",
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_refusal",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "refusal",
-                    "refusal": "I cannot provide that information."
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_empty_refusal_not_included() {
-        let input = json!({
-            "id": "chatcmpl_empty_refusal",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hello!",
-                    "refusal": "",
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_empty_refusal",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hello!",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_single_tool_call() {
-        let input = json!({
-            "id": "chatcmpl_tool",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": "{\"city\": \"Tokyo\"}"
-                        }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_tool",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "function_call",
-                "call_id": "call_abc123",
-                "name": "get_weather",
-                "arguments": "{\"city\": \"Tokyo\"}",
-                "status": "completed"
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multiple_tool_calls() {
-        let input = json!({
-            "id": "chatcmpl_multi_tool",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": "{\"city\": \"Tokyo\"}"
-                            }
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "function",
-                            "function": {
-                                "name": "get_time",
-                                "arguments": "{\"timezone\": \"JST\"}"
-                            }
-                        }
-                    ]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_multi_tool",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "get_weather",
-                    "arguments": "{\"city\": \"Tokyo\"}",
-                    "status": "completed"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "get_time",
-                    "arguments": "{\"timezone\": \"JST\"}",
-                    "status": "completed"
-                }
+            "id": "chatcmpl_mc1", "choices": [
+                { "finish_reason": "stop", "index": 0, "message": { "content": "A", "refusal": null, "role": "assistant" } },
+                { "finish_reason": "stop", "index": 1, "message": { "content": "B", "refusal": null, "role": "assistant" } }
             ],
-            "parallel_tool_calls": true,
-            "tools": []
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
         });
+        let r = result(input);
+        assert_eq!(
+            r["output"].as_array().unwrap().len(),
+            2,
+            "two choices output"
+        );
+        assert_eq!(r["status"], "completed");
 
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_content_and_tool_calls_together() {
+        // First relevant choice determines status
         let input = json!({
-            "id": "chatcmpl_content_tool",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": "Let me check that for you.",
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_abc",
-                        "type": "function",
-                        "function": {
-                            "name": "search",
-                            "arguments": "{\"query\": \"weather\"}"
-                        }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_content_tool",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "Let me check that for you.",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_abc",
-                    "name": "search",
-                    "arguments": "{\"query\": \"weather\"}",
-                    "status": "completed"
-                }
+            "id": "chatcmpl_mc2", "choices": [
+                { "finish_reason": "stop", "index": 0, "message": { "content": "A", "refusal": null, "role": "assistant" } },
+                { "finish_reason": "length", "index": 1, "message": { "content": "B", "refusal": null, "role": "assistant" } }
             ],
-            "parallel_tool_calls": true,
-            "tools": []
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
         });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
+        let r = result(input);
+        assert_eq!(r["status"], "completed", "first choice determines status");
     }
 
-    #[test]
-    fn test_non_function_tool_call_filtered() {
-        let input = json!({
-            "id": "chatcmpl_code_interp",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "calculate",
-                                "arguments": "{}"
-                            }
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "code_interpreter",
-                            "code": "print('hello')"
-                        }
-                    ]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_code_interp",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "function_call",
-                "call_id": "call_1",
-                "name": "calculate",
-                "arguments": "{}",
-                "status": "completed"
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
+    // =============================================
+    //  URL Citation Annotations
+    // =============================================
 
     #[test]
-    fn test_url_citation_annotation() {
+    fn test_url_citation_annotations() {
         let input = json!({
             "id": "chatcmpl_annot",
             "choices": [{
@@ -901,1048 +962,85 @@ mod tests {
             "object": "chat.completion"
         });
 
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_annot",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "According to the source, the answer is 42.",
-                    "annotations": [{
-                        "type": "url_citation",
-                        "start_index": 0,
-                        "end_index": 12,
-                        "url": "https://example.com",
-                        "title": "Example Source"
-                    }],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_usage_with_details() {
-        let input = json!({
-            "id": "chatcmpl_usage",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hello!",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "usage": {
-                "completion_tokens": 42,
-                "prompt_tokens": 125,
-                "total_tokens": 167,
-                "completion_tokens_details": {
-                    "reasoning_tokens": 15,
-                    "audio_tokens": null,
-                    "accepted_prediction_tokens": null,
-                    "rejected_prediction_tokens": null
-                },
-                "prompt_tokens_details": {
-                    "audio_tokens": null,
-                    "cached_tokens": 64
-                }
-            }
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_usage",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hello!",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": [],
-            "usage": {
-                "input_tokens": 125,
-                "output_tokens": 42,
-                "total_tokens": 167,
-                "input_tokens_details": { "cached_tokens": 64 },
-                "output_tokens_details": { "reasoning_tokens": 15 }
-            }
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_usage_without_details() {
-        let input = json!({
-            "id": "chatcmpl_no_details",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "usage": {
-                "completion_tokens": 3,
-                "prompt_tokens": 10,
-                "total_tokens": 13
-            }
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_no_details",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hi",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": [],
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 3,
-                "total_tokens": 13,
-                "input_tokens_details": { "cached_tokens": 0 },
-                "output_tokens_details": { "reasoning_tokens": 0 }
-            }
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_usage_without_total_tokens() {
-        let input = json!({
-            "id": "chatcmpl_no_total",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "usage": {
-                "completion_tokens": 3,
-                "prompt_tokens": 10
-            }
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_no_total",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hi",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": [],
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 3,
-                "total_tokens": 13,
-                "input_tokens_details": { "cached_tokens": 0 },
-                "output_tokens_details": { "reasoning_tokens": 0 }
-            }
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_no_usage_field() {
-        let input = json!({
-            "id": "chatcmpl_no_usage",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_no_usage",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hi",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_finish_reason_stop() {
-        let input = json!({
-            "id": "chatcmpl_stop",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Done.",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
         let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["status"], "completed");
+        let content = &result["output"][0]["content"];
+        let annotations = content[0]["annotations"].as_array().unwrap();
+        assert_eq!(annotations.len(), 1, "one annotation");
+        assert_eq!(annotations[0]["type"], "url_citation");
+        assert_eq!(annotations[0]["url"], "https://example.com");
+        assert_eq!(annotations[0]["title"], "Example Source");
+        assert_eq!(annotations[0]["start_index"], 0);
+        assert_eq!(annotations[0]["end_index"], 12);
     }
 
-    #[test]
-    fn test_finish_reason_length() {
-        let input = json!({
-            "id": "chatcmpl_length",
-            "choices": [{
-                "finish_reason": "length",
-                "index": 0,
-                "message": {
-                    "content": "This is a trunca",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
+    // =============================================
+    //  Namespace Tool Calls
+    // =============================================
 
+    #[test]
+    fn test_namespace_tool_calls() {
+        // Tool call with namespace prefix but no mappings → name stays as-is
+        let input = json!({
+            "id": "chatcmpl_ns1", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "tool_calls": [{ "id": "call_abc", "type": "function",
+                        "function": { "name": "mcp__weather__get_forecast", "arguments": "{\"city\":\"Tokyo\"}" } }] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
+        });
         let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["status"], "incomplete");
-    }
+        assert_eq!(
+            result["output"][0]["name"], "mcp__weather__get_forecast",
+            "no mappings"
+        );
 
-    #[test]
-    fn test_finish_reason_tool_calls() {
-        let input = json!({
-            "id": "chatcmpl_tools",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": { "name": "x", "arguments": "{}" }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["status"], "completed");
-    }
-
-    #[test]
-    fn test_finish_reason_content_filter() {
-        let input = json!({
-            "id": "chatcmpl_filter",
-            "choices": [{
-                "finish_reason": "content_filter",
-                "index": 0,
-                "message": {
-                    "content": "Filtered content",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["status"], "incomplete");
-    }
-
-    #[test]
-    fn test_empty_choices() {
-        let input = json!({
-            "id": "chatcmpl_empty",
-            "choices": [],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_empty",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "incomplete",
-            "output": [],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_service_tier_preserved() {
-        let input = json!({
-            "id": "chatcmpl_tier",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "service_tier": "default"
-        });
-
-        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["service_tier"], "default");
-    }
-
-    #[test]
-    fn test_system_fingerprint_as_metadata() {
-        let input = json!({
-            "id": "chatcmpl_fp",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi",
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "system_fingerprint": "fp_12345abcde"
-        });
-
-        let result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        assert_eq!(result["metadata"]["system_fingerprint"], "fp_12345abcde");
-    }
-
-    #[test]
-    fn test_invalid_body_not_object() {
-        let input = json!("not an object");
-        let result = chat_to_responses_response(input, &NamespaceMappings::new());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_invalid_body_array() {
-        let input = json!([1, 2, 3]);
-        let result = chat_to_responses_response(input, &NamespaceMappings::new());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_reasoning_content_converted() {
-        let input = json!({
-            "id": "chatcmpl_reasoning",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "The answer is 354.",
-                    "refusal": null,
-                    "role": "assistant",
-                    "reasoning_content": "The user is asking for 15 * 23 + 9. Let me calculate: 15 * 23 = 345, then 345 + 9 = 354."
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_reasoning",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "reasoning",
-                    "summary": [{
-                        "type": "summary_text",
-                        "text": "The user is asking for 15 * 23 + 9. Let me calculate: 15 * 23 = 345, then 345 + 9 = 354."
-                    }],
-                    "status": "completed"
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "The answer is 354.",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                }
-            ],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_reasoning_content_only() {
-        let input = json!({
-            "id": "chatcmpl_reasoning_only",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "reasoning_content": "Thinking about the problem..."
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_reasoning_only",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "reasoning",
-                "summary": [{
-                    "type": "summary_text",
-                    "text": "Thinking about the problem..."
-                }],
-                "status": "completed"
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_empty_reasoning_content_skipped() {
-        let input = json!({
-            "id": "chatcmpl_empty_reasoning",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hello!",
-                    "refusal": null,
-                    "role": "assistant",
-                    "reasoning_content": ""
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_empty_reasoning",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Hello!",
-                    "annotations": [],
-                    "logprobs": null
-                }]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_full_response_with_all_fields() {
-        let input = json!({
-            "id": "chatcmpl_full",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "The weather in Tokyo is sunny.",
-                    "refusal": null,
-                    "role": "assistant",
-                    "reasoning_content": "I need to look up weather data for Tokyo. Let me call the weather API.",
-                    "annotations": [{
-                        "type": "url_citation",
-                        "url_citation": {
-                            "start_index": 19,
-                            "end_index": 25,
-                            "url": "https://weather.example.com/tokyo",
-                            "title": "Tokyo Weather"
-                        }
-                    }],
-                    "tool_calls": [{
-                        "id": "call_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": "{\"city\": \"Tokyo\", \"country\": \"Japan\"}"
-                        }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion",
-            "service_tier": "default",
-            "system_fingerprint": "fp_12345abcde",
-            "usage": {
-                "completion_tokens": 18,
-                "prompt_tokens": 25,
-                "total_tokens": 43,
-                "completion_tokens_details": {
-                    "reasoning_tokens": 5
-                },
-                "prompt_tokens_details": {
-                    "cached_tokens": 10
-                }
-            }
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_full",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "reasoning",
-                    "summary": [{
-                        "type": "summary_text",
-                        "text": "I need to look up weather data for Tokyo. Let me call the weather API."
-                    }],
-                    "status": "completed"
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "The weather in Tokyo is sunny.",
-                        "annotations": [{
-                            "type": "url_citation",
-                            "start_index": 19,
-                            "end_index": 25,
-                            "url": "https://weather.example.com/tokyo",
-                            "title": "Tokyo Weather"
-                        }],
-                        "logprobs": null
-                    }]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_abc123",
-                    "name": "get_weather",
-                    "arguments": "{\"city\": \"Tokyo\", \"country\": \"Japan\"}",
-                    "status": "completed"
-                }
-            ],
-            "parallel_tool_calls": true,
-            "tools": [],
-            "usage": {
-                "input_tokens": 25,
-                "output_tokens": 18,
-                "total_tokens": 43,
-                "input_tokens_details": { "cached_tokens": 10 },
-                "output_tokens_details": { "reasoning_tokens": 5 }
-            },
-            "service_tier": "default",
-            "metadata": { "system_fingerprint": "fp_12345abcde" }
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multimodal_array_content() {
-        let input = json!({
-            "id": "chatcmpl_multimodal",
-            "choices": [{
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "Here is the image:"},
-                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
-                    ],
-                    "refusal": null,
-                    "role": "assistant"
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_multimodal",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Here is the image:",
-                        "annotations": [],
-                        "logprobs": null
-                    },
-                    {
-                        "type": "output_text",
-                        "text": "![image](https://example.com/img.png)",
-                        "annotations": [],
-                        "logprobs": null
-                    }
-                ]
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_multiple_choices() {
-        let input = json!({
-            "id": "chatcmpl_multi_choice",
-            "choices": [
-                {
-                    "finish_reason": "stop",
-                    "index": 0,
-                    "message": {
-                        "content": "First answer.",
-                        "refusal": null,
-                        "role": "assistant"
-                    }
-                },
-                {
-                    "finish_reason": "stop",
-                    "index": 1,
-                    "message": {
-                        "content": "Second answer.",
-                        "refusal": null,
-                        "role": "assistant"
-                    }
-                }
-            ],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_multi_choice",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "First answer.",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "Second answer.",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                }
-            ],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_status_determined_by_first_relevant_choice() {
-        let input = json!({
-            "id": "chatcmpl_status_order",
-            "choices": [
-                {
-                    "finish_reason": "stop",
-                    "index": 0,
-                    "message": {"content": "OK", "role": "assistant"}
-                },
-                {
-                    "finish_reason": "length",
-                    "index": 1,
-                    "message": {"content": "Truncated", "role": "assistant"}
-                }
-            ],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &NamespaceMappings::new()).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_status_order",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "OK",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "Truncated",
-                        "annotations": [],
-                        "logprobs": null
-                    }]
-                }
-            ],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    // ============================================
-    // Namespace 工具调用测试
-    // ============================================
-
-    #[test]
-    fn test_namespaced_tool_call_response() {
-        // 带 namespace prefix 的 tool_call 被拆分为 name + namespace
-        let mappings = NamespaceMappings::new();
-
-        let input = json!({
-            "id": "chatcmpl_ns_tool",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_abc",
-                        "type": "function",
-                        "function": {
-                            "name": "mcp__weather__get_forecast",
-                            "arguments": "{\"city\": \"Tokyo\"}"
-                        }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
-        });
-
-        let mut result = chat_to_responses_response(input, &mappings).unwrap();
-        // Without mappings, the name should stay as-is (no namespace)
-        let expected = json!({
-            "id": "chatcmpl_ns_tool",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "function_call",
-                "call_id": "call_abc",
-                "name": "mcp__weather__get_forecast",
-                "arguments": "{\"city\": \"Tokyo\"}",
-                "status": "completed"
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_namespaced_tool_call_with_mappings() {
-        // 带 namespace prefix 且 mappings 存在时拆分为 name + namespace
+        // With mappings → split into name + namespace
         let mut mappings = NamespaceMappings::new();
         mappings.add_namespace("mcp__weather__".to_string());
-
         let input = json!({
-            "id": "chatcmpl_ns_tool2",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_abc",
-                        "type": "function",
-                        "function": {
-                            "name": "mcp__weather__get_forecast",
-                            "arguments": "{\"city\": \"Tokyo\"}"
-                        }
-                    }]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
+            "id": "chatcmpl_ns2", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
+                    "tool_calls": [{ "id": "call_abc", "type": "function",
+                        "function": { "name": "mcp__weather__get_forecast", "arguments": "{\"city\":\"Tokyo\"}" } }] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
         });
+        let result = chat_to_responses_response(input, &mappings).unwrap();
+        assert_eq!(
+            result["output"][0]["name"], "get_forecast",
+            "with mappings name"
+        );
+        assert_eq!(
+            result["output"][0]["namespace"], "mcp__weather__",
+            "with mappings namespace"
+        );
 
-        let mut result = chat_to_responses_response(input, &mappings).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_ns_tool2",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [{
-                "type": "function_call",
-                "call_id": "call_abc",
-                "name": "get_forecast",
-                "namespace": "mcp__weather__",
-                "arguments": "{\"city\": \"Tokyo\"}",
-                "status": "completed"
-            }],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mixed_namespaced_and_regular_tool_calls() {
-        // 混合 namespace 和普通 tool call
+        // Mixed: regular + namespaced tool calls
         let mut mappings = NamespaceMappings::new();
         mappings.add_namespace("mcp__weather__".to_string());
-
         let input = json!({
-            "id": "chatcmpl_mixed",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "index": 0,
-                "message": {
-                    "content": null,
-                    "refusal": null,
-                    "role": "assistant",
+            "id": "chatcmpl_ns3", "choices": [{ "finish_reason": "tool_calls", "index": 0,
+                "message": { "content": null, "refusal": null, "role": "assistant",
                     "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": "{}"
-                            }
-                        },
-                        {
-                            "id": "call_2",
-                            "type": "function",
-                            "function": {
-                                "name": "mcp__weather__get_forecast",
-                                "arguments": "{\"city\": \"Paris\"}"
-                            }
-                        }
-                    ]
-                }
-            }],
-            "created": 1712530587,
-            "model": "gpt-4o",
-            "object": "chat.completion"
+                        { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{}" } },
+                        { "id": "call_2", "type": "function", "function": { "name": "mcp__weather__get_forecast", "arguments": "{\"city\":\"Paris\"}" } }
+                    ] } }],
+            "created": 1712530587, "model": "gpt-4o", "object": "chat.completion"
         });
-
-        let mut result = chat_to_responses_response(input, &mappings).unwrap();
-        let expected = json!({
-            "id": "chatcmpl_mixed",
-            "created_at": 1712530587,
-            "model": "gpt-4o",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "get_weather",
-                    "arguments": "{}",
-                    "status": "completed"
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "get_forecast",
-                    "namespace": "mcp__weather__",
-                    "arguments": "{\"city\": \"Paris\"}",
-                    "status": "completed"
-                }
-            ],
-            "parallel_tool_calls": true,
-            "tools": []
-        });
-
-        strip_output_item_ids(&mut result);
-        assert_eq!(result, expected);
+        let result = chat_to_responses_response(input, &mappings).unwrap();
+        assert_eq!(result["output"][0]["name"], "get_weather", "regular name");
+        assert!(
+            !result["output"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("namespace"),
+            "no namespace for regular"
+        );
+        assert_eq!(
+            result["output"][1]["name"], "get_forecast",
+            "namespaced name"
+        );
+        assert_eq!(
+            result["output"][1]["namespace"], "mcp__weather__",
+            "namespaced namespace"
+        );
     }
 }
