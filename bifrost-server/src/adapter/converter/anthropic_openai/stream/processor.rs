@@ -397,6 +397,9 @@ impl OpenAIToAnthropicStreamProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::converter::stream_test_utils::{
+        NormalizedSseData, load_sse_fixture, normalize_stream_events,
+    };
 
     #[test]
     fn test_tool_call_streaming_conversion() {
@@ -644,5 +647,28 @@ mod tests {
 
         assert_eq!(events[0].0["message"]["usage"]["input_tokens"], 0);
         assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 1);
+    }
+
+    #[test]
+    fn test_full_openai_chat_sse_fixture_to_anthropic_stream() {
+        let processor = OpenAIToAnthropicStreamProcessor::new();
+        let input_events = load_sse_fixture("input/openai_chat_full.sse").unwrap();
+        let expected_events =
+            load_sse_fixture("expected/openai_chat_to_anthropic_full.sse").unwrap();
+        let mut output_events = Vec::new();
+
+        for input_event in input_events {
+            let NormalizedSseData::Json(chunk) = input_event.data else {
+                continue;
+            };
+            output_events.extend(
+                processor
+                    .openai_stream_to_anthropic_stream(chunk)
+                    .unwrap()
+                    .into_events(),
+            );
+        }
+
+        assert_eq!(normalize_stream_events(output_events), expected_events);
     }
 }

@@ -13,6 +13,9 @@ pub mod anthropic_openai;
 pub mod openai_anthropic;
 pub mod openai_responses;
 
+#[cfg(test)]
+pub(crate) mod stream_test_utils;
+
 pub fn create_null() -> serde_json::Value {
     serde_json::Value::Null
 }

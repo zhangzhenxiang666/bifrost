@@ -844,3 +844,34 @@ impl ChatToResponsesStreamProcessor {
         Ok(StreamChunkTransform::new_multi(events))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::converter::stream_test_utils::{
+        NormalizedSseData, load_sse_fixture, normalize_stream_events,
+    };
+
+    #[test]
+    fn test_full_openai_chat_sse_fixture_to_responses_stream() {
+        let processor = ChatToResponsesStreamProcessor::new();
+        let input_events = load_sse_fixture("input/openai_chat_full.sse").unwrap();
+        let expected_events =
+            load_sse_fixture("expected/openai_chat_to_responses_full.sse").unwrap();
+        let mut output_events = Vec::new();
+
+        for input_event in input_events {
+            let NormalizedSseData::Json(chunk) = input_event.data else {
+                continue;
+            };
+            output_events.extend(
+                processor
+                    .chat_stream_to_responses_stream(chunk)
+                    .unwrap()
+                    .into_events(),
+            );
+        }
+
+        assert_eq!(normalize_stream_events(output_events), expected_events);
+    }
+}

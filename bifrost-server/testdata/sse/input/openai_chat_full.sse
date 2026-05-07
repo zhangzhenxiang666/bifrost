@@ -1,0 +1,53 @@
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Think step 1. "},"finish_reason":null}],"usage":{"prompt_tokens":128,"completion_tokens":1,"total_tokens":129}}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"reasoning_content":"Think step 2. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"reasoning_content":"Think step 3. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"reasoning_content":"Think step 4. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"reasoning_content":"Think step 5. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Content block 1. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Content block 2. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Content block 3. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Content block 4. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Content block 5. "},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\""}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"Tokyo\""}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_time","type":"function","function":{"name":"get_time","arguments":"{\"timezone\""}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":":\"Asia/Shanghai\""}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"}"}}]},"finish_reason":null}]}
+
+event: unknow
+data: {"id":"chatcmpl_stream_full","object":"chat.completion.chunk","created":1712530587,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":128,"completion_tokens":64,"total_tokens":192,"completion_tokens_details":{"reasoning_tokens":20}}}
+
+event: unknow
+data: [DONE]

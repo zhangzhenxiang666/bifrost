@@ -314,3 +314,34 @@ fn convert_message_delta(
 
     Ok(StreamChunkTransform::new(data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::converter::stream_test_utils::{
+        NormalizedSseData, load_sse_fixture, normalize_stream_events,
+    };
+
+    #[test]
+    fn test_full_anthropic_messages_sse_fixture_to_openai_chat_stream() {
+        let processor = AnthropicToOpenAIStreamProcessor::new();
+        let input_events = load_sse_fixture("input/anthropic_messages_full.sse").unwrap();
+        let expected_events =
+            load_sse_fixture("expected/anthropic_to_openai_chat_full.sse").unwrap();
+        let mut output_events = Vec::new();
+
+        for input_event in input_events {
+            let NormalizedSseData::Json(chunk) = input_event.data else {
+                continue;
+            };
+            output_events.extend(
+                processor
+                    .anthropic_to_openai_stream(&input_event.event, chunk)
+                    .unwrap()
+                    .into_events(),
+            );
+        }
+
+        assert_eq!(normalize_stream_events(output_events), expected_events);
+    }
+}
