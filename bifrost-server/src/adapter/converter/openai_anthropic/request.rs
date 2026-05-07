@@ -5,6 +5,39 @@ use serde_json::{Value, json};
 
 use super::message::transform_openai_messages;
 
+fn cache_control() -> Value {
+    json!({ "type": "ephemeral" })
+}
+
+fn system_with_cache_control(system: String) -> Value {
+    json!([{ "type": "text", "text": system, "cache_control": cache_control() }])
+}
+
+fn apply_cache_control_to_last_message(messages: &mut [Value]) {
+    let Some(Value::Object(message)) = messages.last_mut() else {
+        return;
+    };
+
+    if let Some(content) = message.get_mut("content") {
+        match content {
+            Value::Array(content_blocks) => {
+                if let Some(Value::Object(block)) = content_blocks.last_mut() {
+                    block.insert("cache_control".to_string(), cache_control());
+                }
+            }
+            Value::String(text) => {
+                let text = text.clone();
+                *content = json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": cache_control()
+                }]);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn transform_request(body: Value) -> Result<Value, LlmMapError> {
     let Value::Object(mut obj) = body else {
         return Err(LlmMapError::Validation(
@@ -34,14 +67,16 @@ pub fn transform_request(body: Value) -> Result<Value, LlmMapError> {
     }
 
     let messages = obj.remove("messages");
-    let (system_text, transformed_messages) = match messages {
+    let (system_text, mut transformed_messages) = match messages {
         Some(Value::Array(msgs)) => transform_openai_messages(msgs),
         _ => (None, Vec::new()),
     };
 
     if let Some(system) = system_text {
-        obj.insert("system".to_string(), Value::String(system));
+        obj.insert("system".to_string(), system_with_cache_control(system));
     }
+
+    apply_cache_control_to_last_message(&mut transformed_messages);
 
     obj.insert("messages".to_string(), Value::Array(transformed_messages));
 
@@ -153,7 +188,9 @@ mod tests {
 
             let expected = json!({
                 "model": "gpt-4o",
-                "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+                ]}],
                 "output_config": {"effort": expected_effort},
                 "max_tokens": 4096
             });
@@ -174,7 +211,9 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "max_tokens": 2048
         });
 
@@ -190,7 +229,9 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "max_tokens": 1024
         });
 
@@ -204,7 +245,9 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "max_tokens": 4096
         });
 
@@ -228,7 +271,9 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "tools": [{
                 "name": "get_weather",
                 "description": "Get weather for a city",
@@ -259,7 +304,9 @@ mod tests {
 
             let expected = json!({
                 "model": "gpt-4o",
-                "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+                ]}],
                 "tool_choice": expected_choice,
                 "max_tokens": 4096
             });
@@ -277,7 +324,9 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "tool_choice": {"type": "tool", "name": "get_weather"},
             "max_tokens": 4096
         });
@@ -309,8 +358,16 @@ mod tests {
 
         let expected = json!({
             "model": "gpt-4o",
-            "system": "You are a helpful assistant.",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are a helpful assistant.",
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+            ]}],
             "tools": [{
                 "name": "get_weather",
                 "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
@@ -320,6 +377,49 @@ mod tests {
             "max_tokens": 4096,
             "temperature": 0.7,
             "stream": false
+        });
+
+        let result = transform_request(input).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_cache_control_applied_to_system_and_last_message_block() {
+        let input = json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "Cache the policy."},
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Middle"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Last text"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+                ]}
+            ]
+        });
+
+        let expected = json!({
+            "model": "gpt-4o",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "Cache the policy.",
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "First"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "Middle"}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Last text"},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://example.com/image.png"},
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]}
+            ],
+            "max_tokens": 4096
         });
 
         let result = transform_request(input).unwrap();
