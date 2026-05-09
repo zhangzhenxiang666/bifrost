@@ -1,7 +1,13 @@
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use std::fs;
+#[cfg(windows)]
+use std::io::ErrorKind;
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use sysinfo::Pid;
 use tar::Archive;
 
@@ -131,17 +137,69 @@ fn download_and_extract(github_tag: &str, platform: &Platform) -> Result<PathBuf
 }
 
 #[cfg(windows)]
+fn remove_backup_file(backup: &Path) -> Result<()> {
+    match fs::remove_file(backup) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+fn schedule_backup_cleanup(backup: &Path) {
+    let command = concat!(
+        "for ($i = 0; $i -lt 30; $i++) { ",
+        "Remove-Item -LiteralPath $args[0] -Force -ErrorAction SilentlyContinue; ",
+        "if (-not (Test-Path -LiteralPath $args[0])) { break }; ",
+        "Start-Sleep -Seconds 1 ",
+        "}"
+    );
+
+    if let Err(error) = Command::new("powershell.exe")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+        .arg(command)
+        .arg(backup)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        print_warning(&format!(
+            "Failed to schedule cleanup for {}: {}",
+            backup.display(),
+            error
+        ));
+    }
+}
+
+#[cfg(windows)]
+fn cleanup_replaced_backup(backup: &Path) {
+    if remove_backup_file(backup).is_err() {
+        schedule_backup_cleanup(backup);
+    }
+}
+
 /// Replace a binary file, handling Windows file-locking safely.
 ///
 /// On Windows, a running executable cannot be overwritten in-place, but it CAN be
 /// renamed. We rename the old file to a `.old` backup first, then place the new one.
-fn replace_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+#[cfg(windows)]
+fn replace_binary(src: &Path, dst: &Path) -> Result<()> {
+    let mut backup_to_cleanup = None;
+
     if dst.exists() {
         let backup = dst.with_extension("old");
-        let _ = std::fs::rename(dst, &backup);
+        remove_backup_file(&backup)?;
+        fs::rename(dst, &backup)?;
+        backup_to_cleanup = Some(backup);
     }
-    std::fs::rename(src, dst)
-        .or_else(|_| std::fs::copy(src, dst).and_then(|_| std::fs::remove_file(src)))?;
+
+    fs::rename(src, dst).or_else(|_| fs::copy(src, dst).and_then(|_| fs::remove_file(src)))?;
+
+    if let Some(backup) = backup_to_cleanup {
+        cleanup_replaced_backup(&backup);
+    }
+
     Ok(())
 }
 
@@ -253,4 +311,33 @@ pub fn cmd_upgrade() -> Result<()> {
     println!();
 
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_binary_removes_old_backup_after_successful_replacement() -> Result<()> {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bifrost-upgrade-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let src = temp_dir.join("bifrost-new.exe");
+        let dst = temp_dir.join("bifrost.exe");
+        let backup = dst.with_extension("old");
+
+        std::fs::write(&src, b"new")?;
+        std::fs::write(&dst, b"old")?;
+
+        replace_binary(&src, &dst)?;
+
+        assert_eq!(std::fs::read(&dst)?, b"new".to_vec());
+        assert!(!src.exists());
+        assert!(!backup.exists());
+
+        std::fs::remove_dir_all(&temp_dir)?;
+
+        Ok(())
+    }
 }
