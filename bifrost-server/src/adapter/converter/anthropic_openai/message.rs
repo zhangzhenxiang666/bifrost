@@ -5,6 +5,8 @@
 use crate::adapter::converter::create_null;
 use serde_json::{Value, json};
 
+const CLAUDE_CODE_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
+
 /// Extract system text from Anthropic system field (string or content blocks)
 pub fn extract_system_text(system: Value) -> String {
     match system {
@@ -16,11 +18,46 @@ pub fn extract_system_text(system: Value) -> String {
                     .and_then(|t| t.as_str())
                     .filter(|t| *t == "text")
                     .and_then(|_| b.get("text").and_then(|t| t.as_str()))
+                    .filter(|text| !is_claude_code_billing_header(text))
             })
             .collect::<Vec<_>>()
             .join("\n\n"),
         _ => String::new(),
     }
+}
+
+pub fn remove_claude_code_billing_header_from_system(body: &mut Value) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+
+    let remove_system = if let Some(Value::Array(blocks)) = obj.get_mut("system") {
+        blocks.retain(|block| {
+            block
+                .get("type")
+                .and_then(|block_type| block_type.as_str())
+                .filter(|block_type| *block_type == "text")
+                .and_then(|_| block.get("text").and_then(|text| text.as_str()))
+                .is_none_or(|text| !is_claude_code_billing_header(text))
+        });
+        blocks.is_empty()
+    } else {
+        false
+    };
+
+    if remove_system {
+        obj.remove("system");
+    }
+}
+
+fn is_claude_code_billing_header(text: &str) -> bool {
+    let Some(header) = text.trim().strip_prefix(CLAUDE_CODE_BILLING_HEADER_PREFIX) else {
+        return false;
+    };
+
+    header.contains("cc_version=")
+        && header.contains("cc_entrypoint=cli")
+        && header.contains("cch=")
 }
 
 /// Transform a single Anthropic message into 1+ OpenAI messages
@@ -386,12 +423,57 @@ mod tests {
                 ]),
                 "Hello.\n\nWorld.",
             ),
+            (
+                json!([
+                    {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.123.5d3; cc_entrypoint=cli; cch=b5d3a;"},
+                    {"type": "text", "text": "You are Claude Code."}
+                ]),
+                "You are Claude Code.",
+            ),
             (json!([]), ""),
             (json!(123), ""),
         ] {
             let result = extract_system_text(input);
             assert_eq!(result, expected);
         }
+    }
+
+    #[test]
+    fn test_remove_claude_code_billing_header_from_system() {
+        let mut input = json!({
+            "model": "claude-sonnet-4-20250514",
+            "system": [
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.123.5d3; cc_entrypoint=cli; cch=b5d3a;"},
+                {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}}
+            ],
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        remove_claude_code_billing_header_from_system(&mut input);
+
+        assert_eq!(
+            input["system"],
+            json!([
+                {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}}
+            ])
+        );
+    }
+
+    #[test]
+    fn test_remove_claude_code_billing_header_removes_empty_system() {
+        let mut input = json!({
+            "model": "claude-sonnet-4-20250514",
+            "system": [
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.123.5d3; cc_entrypoint=cli; cch=abcde;"}
+            ],
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+
+        remove_claude_code_billing_header_from_system(&mut input);
+
+        assert!(input.get("system").is_none());
     }
 
     // ============================================

@@ -221,6 +221,23 @@ mod tests {
         });
         assert_eq!(anthropic_to_openai_request(input).unwrap(), expected);
 
+        let input = json!({
+            "model": "claude-sonnet-4-20250514",
+            "system": [
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.123.5d3; cc_entrypoint=cli; cch=b5d3a;"},
+                {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}}
+            ],
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        let expected = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [
+                {"role": "system", "content": "You are Claude Code."},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+        assert_eq!(anthropic_to_openai_request(input).unwrap(), expected);
+
         // no system field → no system message
         let input = json!({
             "model": "claude-sonnet-4-20250514",

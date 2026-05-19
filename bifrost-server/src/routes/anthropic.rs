@@ -1,5 +1,6 @@
 //! Anthropic-compatible route for messages endpoint
 
+use crate::adapter::converter::anthropic_openai::message::remove_claude_code_billing_header_from_system;
 use crate::routes::handler;
 use crate::state::AppState;
 use crate::{error::Result, routes::RouteEndpoint};
@@ -11,8 +12,10 @@ use serde_json::Value;
 pub async fn messages_v1(
     State(state): State<AppState>,
     headers: http::header::HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<axum::response::Response> {
+    remove_claude_code_billing_header_from_system(&mut body);
+
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -47,7 +50,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use tower::util::ServiceExt;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn create_test_config(mock_server_uri: &str) -> Config {
@@ -113,6 +116,75 @@ mod tests {
                 serde_json::to_string(&json!({
                     "model": "test-provider@test-model",
                     "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": false
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_messages_removes_claude_code_billing_header_before_passthrough() {
+        let mock_server = MockServer::start().await;
+        let expected_response = json!({
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": "Hello from mock server"
+            }]
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(body_json(json!({
+                "model": "test-model",
+                "max_tokens": 1024,
+                "system": [
+                    {
+                        "type": "text",
+                        "text": "You are Claude Code.",
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ],
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&expected_response))
+            .mount(&mock_server)
+            .await;
+
+        let state = create_test_state(&mock_server.uri());
+        let app = axum::Router::new()
+            .route("/anthropic/v1/messages", axum::routing::post(messages_v1))
+            .with_state(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/anthropic/v1/messages")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&json!({
+                    "model": "test-provider@test-model",
+                    "max_tokens": 1024,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": "x-anthropic-billing-header: cc_version=2.1.123.5d3; cc_entrypoint=cli; cch=b5d3a;"
+                        },
+                        {
+                            "type": "text",
+                            "text": "You are Claude Code.",
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ],
                     "messages": [{"role": "user", "content": "Hello"}],
                     "stream": false
                 }))
