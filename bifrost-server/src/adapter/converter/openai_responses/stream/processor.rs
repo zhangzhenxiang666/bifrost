@@ -479,7 +479,7 @@ impl ChatToResponsesStreamProcessor {
                     fn_name.to_string(),
                 );
 
-                // TODO: 如果不是第一个tool_call且是新创建的tool_call， 要发送上一个tool_call结束的生命周期事件
+                // 如果不是第一个tool_call且是新创建的tool_call， 要发送上一个tool_call结束的生命周期事件
                 if self.state().tool_call_count() != 1
                     && has_create
                     && let Some(tc_state) = self.state_mut().get_mut_active_tool_call_state()
