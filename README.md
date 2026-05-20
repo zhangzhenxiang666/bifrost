@@ -58,6 +58,29 @@ endpoint = "anthropic"
 
 更多配置项见 [配置说明](docs/configuration.md)。
 
+同一个 Provider 也可以配置多个命名 deployment，适合同供应商的订阅套餐、按量付费入口或不同区域，未指定时自动轮询：
+
+```toml
+[provider.openai]
+endpoint = "openai"
+
+[[provider.openai.deployments]]
+id = "subscription"
+base_url = "https://subscription.example.com/v1"
+api_key = "sk-subscription"
+weight = 3
+
+[[provider.openai.deployments]]
+id = "payg"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-payg"
+weight = 0
+```
+
+`weight` 默认为 `1`，用于控制未指定 deployment 时的轮询比例；`weight = 0` 表示只允许手动指定，不参与自动轮询。临时指定某个 deployment 可以使用 `model` 后缀，例如 `openai@gpt-4o#payg`。
+
+如果只配置 Provider 顶层的 `base_url` 和 `api_key`，它会被当作一个隐式的 `main` deployment，默认 `enabled = true`、`weight = 1`。
+
 ### 启动服务
 
 ```bash
@@ -109,8 +132,8 @@ curl http://127.0.0.1:5564/openai/v1/chat/completions \
 | `bifrost start` | 启动 Bifrost 服务 |
 | `bifrost stop` | 停止服务 |
 | `bifrost restart` | 重启服务 |
-| `bifrost status` | 查看服务状态 |
-| `bifrost list` | 列出已配置的 Provider |
+| `bifrost status` | 查看服务、版本和 Provider/deployment 状态 |
+| `bifrost list` | 列出已配置的 Provider 及 deployment 路由状态 |
 | `bifrost usage` | 查看 API 使用记录 |
 | `bifrost log` | 查看和监听日志 |
 | `bifrost upgrade` | 从 GitHub Releases 升级 |

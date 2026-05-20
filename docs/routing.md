@@ -80,6 +80,35 @@ value = false
 - 自动化脚本、服务端集成优先使用 `provider@model`，可读性最好。
 - 人手写配置或常用模型可以使用 alias，输入更短。
 
+## 指定 Provider Deployment
+
+如果 Provider 配置了多个命名 deployment，可以在请求中临时指定 deployment。最直接的方式是在 `model` 后追加后缀：
+
+```json
+{
+  "model": "openai@gpt-4o#payg"
+}
+```
+
+alias 也支持同样后缀，例如 `sonnet#payg`。Bifrost 转发到上游前会移除后缀，上游收到的模型仍然是 `gpt-4o` 或 alias 目标中的模型名。
+
+只配置 Provider 顶层 `base_url/api_key` 时，它会被当作隐式的 `main` deployment，因此也可以用 `provider@model#main` 显式指定。
+
+还可以通过请求头指定：
+
+```http
+x-bifrost-deployment: payg
+```
+
+deployment 选择优先级为：
+
+1. `x-bifrost-deployment` 请求头。
+2. `model` 后缀。
+3. alias 配置中的 `deployment`。
+4. Provider deployment 池轮询。
+
+未指定 deployment 时会在 `weight > 0` 的 deployment 之间加权轮询；`weight = 0` 的 deployment 只允许通过上述方式显式指定。retryable 失败会让该 deployment 临时进入冷却期，后续未指定请求会跳过它，冷却结束后再尝试恢复。指定 deployment 的请求只使用该 deployment，不会失败切换到其他 deployment。
+
 ## 客户端端点
 
 Bifrost 暴露多种客户端兼容接口：

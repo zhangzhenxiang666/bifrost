@@ -80,6 +80,45 @@ curl http://127.0.0.1:5564/openai/v1/chat/completions \
 
 Bifrost 会把 OpenAI Chat 风格请求转换为 Anthropic Messages 风格请求。
 
+## 多 Deployment 轮询和指定 Deployment
+
+同一个 Provider 可以配置多个命名 deployment，例如一个订阅套餐入口和一个按量付费入口：
+
+```toml
+[provider.openai]
+endpoint = "openai"
+
+[[provider.openai.deployments]]
+id = "subscription"
+base_url = "https://subscription.example.com/v1"
+api_key = "sk-subscription"
+weight = 3
+
+[[provider.openai.deployments]]
+id = "payg"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-payg"
+weight = 0
+```
+
+未指定 deployment 时，Bifrost 会在启用且 `weight > 0` 的 deployment 之间按权重轮询，并在 retryable 错误后尝试下一个 deployment。`weight = 0` 的 deployment 只允许手动指定，不参与自动轮询。失败的 deployment 会进入冷却期，后续未指定 deployment 的请求会暂时跳过它。临时指定某个 deployment 可以写在模型名后：
+
+```json
+{
+  "model": "openai@gpt-4o#payg"
+}
+```
+
+常用固定 deployment 可以写到 alias：
+
+```toml
+[alias."gpt4-payg"]
+target = "openai@gpt-4o"
+deployment = "payg"
+```
+
+请求头 `x-bifrost-deployment: payg` 会覆盖模型后缀和 alias 配置。
+
 ## 配置模型别名
 
 ```toml

@@ -17,6 +17,8 @@ timeout_secs = 600
 max_retries = 5
 retry_backoff_base_ms = 700
 retry_status_codes = [429, 500, 502, 503, 504]
+deployment_cooldown_base_ms = 30000
+deployment_cooldown_max_ms = 300000
 proxy = "http://127.0.0.1:8080"
 ```
 
@@ -27,6 +29,8 @@ proxy = "http://127.0.0.1:8080"
 | `max_retries` | `u32` | `5` | 上游请求失败后的最大重试次数 |
 | `retry_backoff_base_ms` | `u64` | `700` | 指数退避的基础延迟，单位为毫秒 |
 | `retry_status_codes` | `Array<u16>` | `[429, 500, 502, 503, 504]` | 触发重试的 HTTP 状态码，会与默认值合并 |
+| `deployment_cooldown_base_ms` | `u64` | `30000` | deployment 发生 retryable 失败后的初始冷却时间 |
+| `deployment_cooldown_max_ms` | `u64` | `300000` | 连续失败时 deployment 冷却时间的上限 |
 | `proxy` | `String` | 无 | 可选 HTTP 代理地址 |
 
 如果不需要代理，可以删除 `proxy` 字段。
@@ -57,8 +61,9 @@ endpoint = "anthropic"
 
 | 字段 | 类型 | 默认值 | 必填 | 说明 |
 | ---- | ---- | ------ | ---- | ---- |
-| `base_url` | `String` | 无 | 是 | 上游 Provider 的 API 地址 |
-| `api_key` | `String` | 无 | 是 | 上游 Provider 的 API key |
+| `base_url` | `String` | 无 | 否 | 上游 Provider 的默认 API 地址；未配置时必须配置至少一个启用的 `deployments` |
+| `api_key` | `String` | 无 | 否 | 上游 Provider 的默认 API key；未配置时必须配置至少一个启用的 `deployments` |
+| `deployments` | `Array` | 无 | 否 | Provider 的上游部署池，用于不同 base URL/key 的轮询、指定和失败切换 |
 | `endpoint` | `String` | `openai` | 否 | 上游端点类型，可选 `openai` 或 `anthropic` |
 | `headers` | `Array` | 无 | 否 | Provider 级别的额外请求头，会添加到所有匹配请求 |
 | `body` | `Array` | 无 | 否 | Provider 级别的额外请求体字段，会合并到请求体 |
@@ -68,6 +73,45 @@ endpoint = "anthropic"
 | `models` | `Array` | 无 | 否 | 模型级别配置 |
 
 `endpoint` 描述的是上游 Provider 的协议类型，不是客户端访问 Bifrost 时使用的接口。客户端可以访问 OpenAI 或 Anthropic 风格接口，Bifrost 会根据上游 endpoint 自动选择转换方式。
+
+### 多 Deployment 池
+
+同一个 Provider 可以配置多个命名 deployment。它适合把同供应商的订阅套餐、按量付费入口、不同区域或不同账号放在同一个逻辑 Provider 下。未指定 deployment 时，Bifrost 会按权重轮询选择；如果某个 deployment 在最终重试后仍返回 retryable 状态码或网络错误，会尝试同 Provider 下一个启用的 deployment，并让失败的 deployment 进入冷却期。冷却期间未指定 deployment 的请求会跳过它；冷却结束后会再次尝试，成功则恢复正常，失败则按指数退避延长冷却时间。
+
+```toml
+[provider.openai]
+endpoint = "openai"
+
+[[provider.openai.deployments]]
+id = "subscription"
+base_url = "https://subscription.example.com/v1"
+api_key = "sk-subscription"
+weight = 3
+
+[[provider.openai.deployments]]
+id = "payg"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-payg"
+weight = 0
+```
+
+`base_url` 和 `api_key` 可以和 `deployments` 同时存在，此时旧字段会作为名为 `main` 的隐式 deployment 参与轮询，等价于一个 `enabled = true`、`weight = 1` 的 deployment 简写。如果需要调整它的权重、设为 `weight = 0`，或完全禁用它，请把这组 `base_url/api_key` 改写成显式 `[[provider.openai.deployments]]`。`deployments.enabled` 是可选字段，默认为 `true`；设置为 `false` 时该 deployment 完全禁用，不能自动轮询，也不能被请求头、模型后缀或 alias 指定。`deployments.weight` 默认为 `1`，只影响未指定 deployment 请求的首选分布；`weight = 0` 表示该 deployment 不参与自动轮询，但仍可通过请求头、模型后缀或 alias 显式指定。一次请求内部的失败切换不会重复尝试同一个 deployment。
+
+指定某个 deployment 有三种方式，优先级从高到低：
+
+1. 请求头 `x-bifrost-deployment: payg`。
+2. `model` 后缀，例如 `openai@gpt-4o#payg`；alias 也支持 `sonnet#payg`。
+3. 复杂 alias 的 `deployment` 字段。
+
+示例：
+
+```toml
+[alias."gpt4-payg"]
+target = "openai@gpt-4o"
+deployment = "payg"
+```
+
+指定 deployment 的请求只会使用该 deployment，不会失败切换到其他 deployment。响应会包含 `x-bifrost-provider`、`x-bifrost-deployment` 和 `x-bifrost-fallback-count`，只暴露 deployment id，不暴露 API key。
 
 ## Headers 和 Body 扩展
 
@@ -216,6 +260,7 @@ value = false
 | 字段 | 类型 | 必填 | 说明 |
 | ---- | ---- | ---- | ---- |
 | `target` | `String` | 是 | 目标 `provider@model` |
+| `deployment` | `String` | 否 | 固定使用目标 Provider 下的某个 deployment id |
 | `headers` | `Array` | 否 | alias 级额外请求头 |
 | `body` | `Array` | 否 | alias 级额外请求体字段 |
 

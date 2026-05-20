@@ -9,8 +9,8 @@
 | `bifrost start` | 启动 Bifrost 服务 |
 | `bifrost stop` | 停止 Bifrost 服务 |
 | `bifrost restart` | 重启 Bifrost 服务 |
-| `bifrost status` | 查看服务运行状态 |
-| `bifrost list` | 列出当前配置的 Provider |
+| `bifrost status` | 查看服务运行状态、版本和 Provider/deployment 状态 |
+| `bifrost list` | 列出当前配置的 Provider 及 deployment 路由状态 |
 | `bifrost upgrade` | 从 GitHub Releases 自动升级到最新版本 |
 
 常见流程：
@@ -44,6 +44,7 @@ bifrost usage
 | `--to` | 无 | 无 | 结束日期，格式为 `YYYY-MM-DD`，需要与 `--from` 配合 |
 | `--time-range` | `-t` | 无 | 时间范围过滤，例如 `12:00-16:00` |
 | `--provider` | `-p` | 无 | 按 Provider 过滤，支持 `*` 通配符 |
+| `--deployment` | 无 | 无 | 按 deployment 过滤，支持 `*` 通配符 |
 | `--model` | `-m` | 无 | 按模型过滤，支持 `*` 通配符 |
 
 ### 示例
@@ -61,13 +62,16 @@ bifrost usage --from 2026-04-01 --to 2026-04-15
 # 查看某个 Provider 的记录
 bifrost usage --provider openai
 
+# 查看某个 deployment 的记录
+bifrost usage --provider openai --deployment payg
+
 # 组合过滤
-bifrost usage --provider openai* --time-range 09:00-12:00
+bifrost usage --provider openai* --deployment pay* --time-range 09:00-12:00
 ```
 
 ## 月度用量统计
 
-`bifrost usage month` 用于查看月度 token 用量，并按 Provider 分组汇总。
+`bifrost usage month` 用于查看月度 token 用量，并按 Provider 和 deployment 分组汇总。
 
 ```bash
 bifrost usage month [month]
@@ -90,7 +94,7 @@ bifrost usage month 4
 bifrost usage month 2026-04
 ```
 
-输出会按 Provider 汇总请求数、Prompt Token、Completion Token 和 Total Token。
+输出会按 Provider/deployment 汇总请求数、Prompt Token、Completion Token 和 Total Token。
 
 ## 查看日志
 
@@ -107,6 +111,8 @@ bifrost log
 | `--date` | 无 | 今天 | 指定日期，格式为 `YYYY-MM-DD` |
 | `--time-range` | `-t` | 无 | 时间范围过滤，例如 `12:00-16:00` |
 | `--level` | `-l` | 无 | 按日志级别过滤，支持 `*` 通配符 |
+| `--provider` | `-p` | 无 | 按日志中的 Provider 过滤，支持 `*` 通配符 |
+| `--deployment` | 无 | 无 | 按日志中的 deployment 过滤，支持 `*` 通配符 |
 | `--lines` | 无 | `30` | 显示的日志条数 |
 | `--tail` | 无 | `false` | 实时监听新日志 |
 
@@ -124,6 +130,9 @@ bifrost log --lines 100
 
 # 按时间范围过滤
 bifrost log --time-range 09:00-12:00
+
+# 按上游 deployment 过滤
+bifrost log --provider openai --deployment payg
 
 # 实时监听日志
 bifrost log --tail

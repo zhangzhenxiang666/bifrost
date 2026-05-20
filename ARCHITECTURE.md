@@ -74,7 +74,7 @@ For example, an OpenAI Responses route targeting an Anthropic provider uses:
 ## Request Flow
 
 1. The CLI starts the server with a loaded `Config`.
-2. `bifrost-server` builds `ProviderRegistry`, stores `AppState`, configures CORS and request logging, then registers Axum routes.
+2. `bifrost-server` builds `ProviderRegistry`, creates `AppState`, configures CORS and request logging, then registers Axum routes.
 3. A route handler receives a client request and determines the route endpoint.
 4. The handler resolves the model target, provider, and model name from `provider@model` or alias configuration.
 5. `ProviderRegistry::build_executor` selects the adapter chain from `(route endpoint, provider endpoint)`.
