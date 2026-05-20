@@ -25,6 +25,14 @@ pub struct LogArgs {
     #[arg(short, long)]
     pub level: Option<String>,
 
+    /// Filter by provider id (supports * wildcard)
+    #[arg(short, long)]
+    pub provider: Option<String>,
+
+    /// Filter by deployment id (supports * wildcard)
+    #[arg(long)]
+    pub deployment: Option<String>,
+
     /// Number of log lines to display
     #[arg(long, default_value = "30")]
     pub lines: usize,
@@ -110,6 +118,8 @@ fn matches_wildcard(text: &str, pattern: &str) -> bool {
 fn matches_filters(
     record: &LogRecord,
     level: &Option<String>,
+    provider: &Option<String>,
+    deployment: &Option<String>,
     time_range: &Option<(NaiveTime, NaiveTime)>,
 ) -> bool {
     if let Some(l) = level
@@ -121,6 +131,16 @@ fn matches_filters(
     if let Some((start, end)) = time_range
         && let Ok(time) = NaiveTime::parse_from_str(&record.timestamp[11..19], "%H:%M:%S")
         && (time < *start || time > *end)
+    {
+        return false;
+    }
+    if let Some(provider) = provider
+        && !field_matches(&record.fields, &["provider_id", "provider"], provider)
+    {
+        return false;
+    }
+    if let Some(deployment) = deployment
+        && !field_matches(&record.fields, &["deployment_id", "deployment"], deployment)
     {
         return false;
     }
@@ -225,6 +245,25 @@ struct SpanInfo2 {
     span: usize,
 }
 
+fn field_to_string(fields: &serde_json::Value, key: &str) -> Option<String> {
+    let value = fields.get(key)?;
+    if let Some(s) = value.as_str() {
+        Some(s.to_string())
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn field_value_or(fields: &serde_json::Value, key: &str, default: &str) -> String {
+    field_to_string(fields, key).unwrap_or_else(|| default.to_string())
+}
+
+fn field_matches(fields: &serde_json::Value, keys: &[&str], pattern: &str) -> bool {
+    keys.iter().any(|key| {
+        field_to_string(fields, key).is_some_and(|value| matches_wildcard(&value, pattern))
+    })
+}
+
 fn format_message(level: &str, fields: &serde_json::Value) -> String {
     if let Some(msg) = fields.get("message").and_then(|v| v.as_str()) {
         return msg.to_string();
@@ -236,29 +275,44 @@ fn format_message(level: &str, fields: &serde_json::Value) -> String {
     let log_type = fields.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let mut processed_keys: Vec<&str> = vec!["type", "message", "msg"];
     let base = match log_type {
-        "loggger-middleware" => {
-            let client_ip = fields
-                .get("client_ip")
-                .and_then(|v| v.as_str())
-                .unwrap_or("-");
-            let port = fields.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
-            let path = fields.get("path").and_then(|v| v.as_str()).unwrap_or("-");
-            let status = fields.get("status").and_then(|v| v.as_str()).unwrap_or("-");
-            let duration = fields
-                .get("duration_ms")
-                .and_then(|v| v.as_str())
-                .unwrap_or("-");
+        "request" | "logger-middleware" | "loggger-middleware" => {
+            let client_ip = field_value_or(fields, "client_ip", "-");
+            let port = field_value_or(fields, "port", "0");
+            let method = field_value_or(fields, "method", "-");
+            let path = field_value_or(fields, "path", "-");
+            let status = field_value_or(fields, "status", "-");
+            let duration = field_value_or(fields, "duration_ms", "-");
+            let provider = field_value_or(fields, "provider_id", "-");
+            let deployment = field_value_or(fields, "deployment_id", "-");
+            let fallback_count = field_value_or(fields, "fallback_count", "0");
             let body = fields.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            processed_keys.extend(&["client_ip", "port", "path", "status", "duration_ms", "body"]);
+            processed_keys.extend(&[
+                "client_ip",
+                "port",
+                "method",
+                "path",
+                "http_version",
+                "status",
+                "duration_ms",
+                "provider_id",
+                "deployment_id",
+                "fallback_count",
+                "body",
+            ]);
+            let upstream = if provider == "-" {
+                String::new()
+            } else {
+                format!(" [{}#{} fallback={}]", provider, deployment, fallback_count)
+            };
             if level == "ERROR" && !body.is_empty() {
                 format!(
-                    "{}:{} {} {} ({}ms) | {}",
-                    client_ip, port, path, status, duration, body
+                    "{}:{} {} {} {} ({}ms){} | {}",
+                    client_ip, port, method, path, status, duration, upstream, body
                 )
             } else {
                 format!(
-                    "{}:{} {} {} ({}ms)",
-                    client_ip, port, path, status, duration
+                    "{}:{} {} {} {} ({}ms){}",
+                    client_ip, port, method, path, status, duration, upstream
                 )
             }
         }
@@ -303,7 +357,13 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
 
     if args.tail {
         let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
-        return cmd_log_tail(date_naive, time_range, args.level.clone());
+        return cmd_log_tail(
+            date_naive,
+            time_range,
+            args.level.clone(),
+            args.provider.clone(),
+            args.deployment.clone(),
+        );
     }
 
     let time_range = args.time_range.as_ref().and_then(|s| parse_time_range(s));
@@ -314,7 +374,15 @@ pub fn cmd_log(args: LogArgs) -> Result<()> {
 
     let filtered: Vec<&LogRecord> = records
         .iter()
-        .filter(|r| matches_filters(r, &args.level, &time_range))
+        .filter(|r| {
+            matches_filters(
+                r,
+                &args.level,
+                &args.provider,
+                &args.deployment,
+                &time_range,
+            )
+        })
         .collect();
 
     if filtered.is_empty() {
@@ -503,6 +571,8 @@ fn cmd_log_tail(
     date_naive: NaiveDate,
     time_range: Option<(NaiveTime, NaiveTime)>,
     level_filter: Option<String>,
+    provider_filter: Option<String>,
+    deployment_filter: Option<String>,
 ) -> Result<()> {
     let dir = get_log_dir();
     let date_str = date_naive.format("%Y-%m-%d").to_string();
@@ -538,7 +608,15 @@ fn cmd_log_tail(
 
         let filtered: Vec<&LogRecord> = new_records
             .iter()
-            .filter(|r| matches_filters(r, &level_filter, &time_range))
+            .filter(|r| {
+                matches_filters(
+                    r,
+                    &level_filter,
+                    &provider_filter,
+                    &deployment_filter,
+                    &time_range,
+                )
+            })
             .collect();
 
         if filtered.is_empty() {

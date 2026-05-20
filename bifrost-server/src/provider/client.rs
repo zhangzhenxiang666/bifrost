@@ -107,6 +107,16 @@ impl HttpClient {
         false
     }
 
+    /// Check if an upstream HTTP status should be retried.
+    pub fn is_retryable_status_code(&self, status_code: u16) -> bool {
+        DEFAULT_RETRY_CODES.contains(&status_code)
+            || self
+                .retry_config
+                .retry_status_codes
+                .as_ref()
+                .is_some_and(|codes| codes.contains(&status_code))
+    }
+
     /// Calculate exponential backoff delay with jitter
     ///
     /// delay = base_ms * 2^attempt + random_jitter
@@ -173,12 +183,7 @@ impl HttpClient {
                 Ok(resp) => {
                     let status = resp.status();
                     let status_code = status.as_u16();
-                    if (DEFAULT_RETRY_CODES.contains(&status_code)
-                        || self
-                            .retry_config
-                            .retry_status_codes
-                            .as_ref()
-                            .is_some_and(|codes| codes.contains(&status_code)))
+                    if self.is_retryable_status_code(status_code)
                         && attempt < self.retry_config.max_retries
                     {
                         attempt += 1;

@@ -18,6 +18,7 @@ const EXCLUDED_HEADERS: &[&str] = &[
     "accept-encoding",
     "authorization",
     "x-api-key",
+    "x-bifrost-deployment",
 ];
 
 /// Remove excluded headers from the HeaderMap, including both hardcoded headers

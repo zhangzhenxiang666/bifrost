@@ -36,6 +36,10 @@ pub struct UsageArgs {
     #[arg(short, long)]
     pub provider: Option<String>,
 
+    /// Filter by deployment (supports * wildcard, AND relationship)
+    #[arg(long)]
+    pub deployment: Option<String>,
+
     /// Filter by model (supports * wildcard, AND relationship)
     #[arg(short, long)]
     pub model: Option<String>,
@@ -58,6 +62,7 @@ pub enum UsageSubcommand {
 #[derive(Tabled)]
 struct MonthRow {
     provider: String,
+    deployment: String,
     requests: String,
     prompt: String,
     completion: String,
@@ -68,6 +73,7 @@ struct MonthRow {
 struct GroupedRow {
     date: String,
     provider: String,
+    deployment: String,
     model: String,
     requests: String,
     prompt: String,
@@ -95,6 +101,10 @@ fn format_tokens(n: u32) -> String {
     } else {
         n.to_string()
     }
+}
+
+fn deployment_label(record: &UsageRecord) -> &str {
+    record.deployment.as_deref().unwrap_or("default")
 }
 
 fn parse_time_range(s: &str) -> Option<(NaiveTime, NaiveTime)> {
@@ -135,12 +145,19 @@ fn matches_wildcard(text: &str, pattern: &str) -> bool {
 fn matches_filters(
     record: &UsageRecord,
     provider: &Option<String>,
+    deployment: &Option<String>,
     model: &Option<String>,
     time_range: &Option<(NaiveTime, NaiveTime)>,
 ) -> bool {
     #[expect(clippy::collapsible_if)]
     if let Some(p) = provider {
         if !matches_wildcard(&record.provider, p) {
+            return false;
+        }
+    }
+    #[expect(clippy::collapsible_if)]
+    if let Some(d) = deployment {
+        if !matches_wildcard(deployment_label(record), d) {
             return false;
         }
     }
@@ -244,10 +261,12 @@ fn cmd_month(month_str: Option<&str>) -> Result<()> {
     use std::collections::BTreeMap;
     type StatsVal = (u32, u32, u32);
 
-    let mut by_provider: BTreeMap<String, StatsVal> = BTreeMap::new();
+    let mut by_provider: BTreeMap<String, BTreeMap<String, StatsVal>> = BTreeMap::new();
     for r in &records {
         let entry = by_provider
             .entry(r.record.provider.clone())
+            .or_default()
+            .entry(deployment_label(&r.record).to_string())
             .or_insert((0, 0, 0));
         entry.0 += 1;
         entry.1 += r.record.prompt_tokens;
@@ -255,15 +274,18 @@ fn cmd_month(month_str: Option<&str>) -> Result<()> {
     }
 
     let mut rows: Vec<MonthRow> = Vec::new();
-    for (provider, (requests, prompt, completion)) in by_provider {
-        let total = prompt + completion;
-        rows.push(MonthRow {
-            provider,
-            requests: requests.to_string(),
-            prompt: format_tokens(prompt),
-            completion: format_tokens(completion),
-            total: format_tokens(total),
-        });
+    for (provider, deployments) in by_provider {
+        for (deployment, (requests, prompt, completion)) in deployments {
+            let total = prompt + completion;
+            rows.push(MonthRow {
+                provider: provider.clone(),
+                deployment,
+                requests: requests.to_string(),
+                prompt: format_tokens(prompt),
+                completion: format_tokens(completion),
+                total: format_tokens(total),
+            });
+        }
     }
 
     let month_label = format!("{year}-{month_num:02}");
@@ -336,7 +358,15 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
     let filtered: Vec<UsageRecordWithDate> = records
         .into_iter()
-        .filter(|r| matches_filters(&r.record, &args.provider, &args.model, &time_range))
+        .filter(|r| {
+            matches_filters(
+                &r.record,
+                &args.provider,
+                &args.deployment,
+                &args.model,
+                &time_range,
+            )
+        })
         .collect();
 
     if filtered.is_empty() {
@@ -358,10 +388,13 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
         use std::collections::BTreeMap;
         type SlotKey = u32;
         type ProviderKey = String;
+        type DeploymentKey = String;
         type ModelKey = String;
         type StatsVal = (u32, u32, u32);
-        let mut by_slot: BTreeMap<SlotKey, BTreeMap<ProviderKey, BTreeMap<ModelKey, StatsVal>>> =
-            BTreeMap::new();
+        type ModelStats = BTreeMap<ModelKey, StatsVal>;
+        type DeploymentStats = BTreeMap<DeploymentKey, ModelStats>;
+        type ProviderStats = BTreeMap<ProviderKey, DeploymentStats>;
+        let mut by_slot: BTreeMap<SlotKey, ProviderStats> = BTreeMap::new();
 
         for r in &filtered {
             let hour: u32 = r.record.time[..2].parse().unwrap_or(0);
@@ -370,6 +403,8 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                 .entry(slot)
                 .or_default()
                 .entry(r.record.provider.clone())
+                .or_default()
+                .entry(deployment_label(&r.record).to_string())
                 .or_default()
                 .entry(r.record.model.clone())
                 .or_insert((0, 0, 0));
@@ -380,18 +415,21 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let mut rows: Vec<GroupedRow> = Vec::new();
         for (slot, providers) in by_slot {
-            for (provider, models) in providers {
-                for (model, (requests, prompt, completion)) in models {
-                    let total = prompt + completion;
-                    rows.push(GroupedRow {
-                        date: format!("{:02}:00-{:02}:59", slot, slot + 4),
-                        provider: provider.clone(),
-                        model,
-                        requests: requests.to_string(),
-                        prompt: format_tokens(prompt),
-                        completion: format_tokens(completion),
-                        total: format_tokens(total),
-                    });
+            for (provider, deployments) in providers {
+                for (deployment, models) in deployments {
+                    for (model, (requests, prompt, completion)) in models {
+                        let total = prompt + completion;
+                        rows.push(GroupedRow {
+                            date: format!("{:02}:00-{:02}:59", slot, slot + 4),
+                            provider: provider.clone(),
+                            deployment: deployment.clone(),
+                            model,
+                            requests: requests.to_string(),
+                            prompt: format_tokens(prompt),
+                            completion: format_tokens(completion),
+                            total: format_tokens(total),
+                        });
+                    }
                 }
             }
         }
@@ -432,6 +470,27 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                 if span > 1 {
                     table.with(
                         Modify::new(Cell::new(i + 1, 1))
+                            .with(RowSpan::new(span as isize))
+                            .with(Alignment::center())
+                            .with(Alignment::center_vertical()),
+                    );
+                }
+                i += span;
+            }
+
+            let mut i = 0;
+            while i < rows.len() {
+                let mut span = 1;
+                while i + span < rows.len()
+                    && rows[i + span].date == rows[i].date
+                    && rows[i + span].provider == rows[i].provider
+                    && rows[i + span].deployment == rows[i].deployment
+                {
+                    span += 1;
+                }
+                if span > 1 {
+                    table.with(
+                        Modify::new(Cell::new(i + 1, 2))
                             .with(RowSpan::new(span as isize))
                             .with(Alignment::center())
                             .with(Alignment::center_vertical()),
@@ -463,19 +522,22 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
         use std::collections::BTreeMap;
         type DateKey = String;
         type ProviderKey = String;
+        type DeploymentKey = String;
         type ModelKey = String;
         type StatsVal = (u32, u32, u32);
+        type ModelStats = BTreeMap<ModelKey, StatsVal>;
+        type DeploymentStats = BTreeMap<DeploymentKey, ModelStats>;
+        type ProviderStats = BTreeMap<ProviderKey, DeploymentStats>;
 
-        let mut by_date_provider_model: BTreeMap<
-            DateKey,
-            BTreeMap<ProviderKey, BTreeMap<ModelKey, StatsVal>>,
-        > = BTreeMap::new();
+        let mut by_date_provider_model: BTreeMap<DateKey, ProviderStats> = BTreeMap::new();
 
         for r in &filtered {
             let entry = by_date_provider_model
                 .entry(r.date.clone())
                 .or_default()
                 .entry(r.record.provider.clone())
+                .or_default()
+                .entry(deployment_label(&r.record).to_string())
                 .or_default()
                 .entry(r.record.model.clone())
                 .or_insert((0, 0, 0));
@@ -486,18 +548,21 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let mut rows: Vec<GroupedRow> = Vec::new();
         for (date, providers) in by_date_provider_model {
-            for (provider, models) in providers {
-                for (model, (requests, prompt, completion)) in models {
-                    let total = prompt + completion;
-                    rows.push(GroupedRow {
-                        date: date.clone(),
-                        provider: provider.clone(),
-                        model,
-                        requests: requests.to_string(),
-                        prompt: format_tokens(prompt),
-                        completion: format_tokens(completion),
-                        total: format_tokens(total),
-                    });
+            for (provider, deployments) in providers {
+                for (deployment, models) in deployments {
+                    for (model, (requests, prompt, completion)) in models {
+                        let total = prompt + completion;
+                        rows.push(GroupedRow {
+                            date: date.clone(),
+                            provider: provider.clone(),
+                            deployment: deployment.clone(),
+                            model,
+                            requests: requests.to_string(),
+                            prompt: format_tokens(prompt),
+                            completion: format_tokens(completion),
+                            total: format_tokens(total),
+                        });
+                    }
                 }
             }
         }
@@ -538,6 +603,27 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                 if span > 1 {
                     table.with(
                         Modify::new(Cell::new(i + 1, 1))
+                            .with(RowSpan::new(span as isize))
+                            .with(Alignment::center())
+                            .with(Alignment::center_vertical()),
+                    );
+                }
+                i += span;
+            }
+
+            let mut i = 0;
+            while i < rows.len() {
+                let mut span = 1;
+                while i + span < rows.len()
+                    && rows[i + span].date == rows[i].date
+                    && rows[i + span].provider == rows[i].provider
+                    && rows[i + span].deployment == rows[i].deployment
+                {
+                    span += 1;
+                }
+                if span > 1 {
+                    table.with(
+                        Modify::new(Cell::new(i + 1, 2))
                             .with(RowSpan::new(span as isize))
                             .with(Alignment::center())
                             .with(Alignment::center_vertical()),

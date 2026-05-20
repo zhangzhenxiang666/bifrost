@@ -24,6 +24,8 @@ fn get_usage_dir() -> &'static PathBuf {
 pub struct UsageRecord {
     pub time: String,
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
     pub model: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -35,11 +37,24 @@ impl UsageRecord {
         Self {
             time: Local::now().format("%H:%M:%S").to_string(),
             provider: provider_id.to_string(),
+            deployment: None,
             model: model.to_string(),
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         }
+    }
+
+    pub fn with_deployment(
+        provider_id: &str,
+        deployment_id: &str,
+        model: &str,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    ) -> Self {
+        let mut record = Self::new(provider_id, model, prompt_tokens, completion_tokens);
+        record.deployment = Some(deployment_id.to_string());
+        record
     }
 
     pub fn write(&self) -> std::io::Result<()> {
@@ -74,13 +89,23 @@ pub fn record_usage(
     provider_id: &str,
     endpoint: Endpoint,
     model: &str,
+    deployment_id: Option<&str>,
 ) {
     let (prompt_tokens, completion_tokens) = match endpoint {
         Endpoint::OpenAI => extract_openai_usage(response).unwrap_or((0, 0)),
         Endpoint::Anthropic => extract_anthropic_usage(response).unwrap_or((0, 0)),
     };
 
-    let record = UsageRecord::new(provider_id, model, prompt_tokens, completion_tokens);
+    let record = match deployment_id {
+        Some(deployment_id) => UsageRecord::with_deployment(
+            provider_id,
+            deployment_id,
+            model,
+            prompt_tokens,
+            completion_tokens,
+        ),
+        None => UsageRecord::new(provider_id, model, prompt_tokens, completion_tokens),
+    };
     if let Err(e) = record.write() {
         tracing::warn!("Failed to write usage record: {}", e);
     }
@@ -89,10 +114,20 @@ pub fn record_usage(
 pub fn record_stream_usage(
     provider_id: &str,
     model: &str,
+    deployment_id: Option<&str>,
     prompt_tokens: u32,
     completion_tokens: u32,
 ) {
-    let record = UsageRecord::new(provider_id, model, prompt_tokens, completion_tokens);
+    let record = match deployment_id {
+        Some(deployment_id) => UsageRecord::with_deployment(
+            provider_id,
+            deployment_id,
+            model,
+            prompt_tokens,
+            completion_tokens,
+        ),
+        None => UsageRecord::new(provider_id, model, prompt_tokens, completion_tokens),
+    };
     if let Err(e) = record.write() {
         tracing::warn!("Failed to write usage record: {}", e);
     }

@@ -1,16 +1,5 @@
 use crate::provider::registry::ProviderRegistry;
 use std::sync::Arc;
-use std::sync::OnceLock;
-
-static GLOBAL_STATE: OnceLock<AppState> = OnceLock::new();
-
-pub fn set_global_state(state: AppState) {
-    GLOBAL_STATE.set(state).expect("global state already set");
-}
-
-pub fn get_global_state() -> &'static AppState {
-    GLOBAL_STATE.get().expect("global state not set")
-}
 
 /// Application state for route handlers
 #[derive(Debug, Clone)]

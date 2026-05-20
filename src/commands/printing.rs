@@ -44,13 +44,12 @@ pub fn print_process_table(
     cpu: f32,
     port: Option<u16>,
     proxy: Option<&str>,
+    version: Option<&str>,
 ) {
-    let mut rows = vec![
-        ("PID", pid.to_string()),
-        ("Process", name.to_string()),
-        ("Memory", format!("{:.2} MB", memory)),
-        ("CPU", format!("{:.1}%", cpu)),
-    ];
+    let mut rows = vec![("PID", pid.to_string()), ("Process", name.to_string())];
+    if let Some(version) = version {
+        rows.push(("Version", version.to_string()));
+    }
     if let Some(port) = port {
         rows.push(("Port", port.to_string()));
     }
@@ -59,5 +58,7 @@ pub fn print_process_table(
     } else {
         rows.push(("Proxy", "None".to_string()));
     }
+    rows.push(("Memory", format!("{:.2} MB", memory)));
+    rows.push(("CPU", format!("{:.1}%", cpu)));
     print_kv_table(&rows);
 }

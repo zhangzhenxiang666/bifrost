@@ -46,6 +46,24 @@ pub async fn request_logger(
         let duration = start.elapsed();
         let status_code = response.status();
         let duration_ms = duration.as_millis();
+        let provider_id = response
+            .headers()
+            .get("x-bifrost-provider")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("-")
+            .to_string();
+        let deployment_id = response
+            .headers()
+            .get("x-bifrost-deployment")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("-")
+            .to_string();
+        let fallback_count = response
+            .headers()
+            .get("x-bifrost-fallback-count")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("0")
+            .to_string();
 
         let http_version = match version {
             axum::http::Version::HTTP_10 => "HTTP/1.0",
@@ -73,8 +91,11 @@ pub async fn request_logger(
                 http_version = %http_version,
                 status = %status_code,
                 duration_ms = %duration_ms,
+                provider_id = %provider_id,
+                deployment_id = %deployment_id,
+                fallback_count = %fallback_count,
                 body = %body_str.trim(),
-                r#type = %"loggger-middleware"
+                r#type = "request"
             );
             return Response::from_parts(parts, axum::body::Body::from(body_bytes));
         }
@@ -87,7 +108,10 @@ pub async fn request_logger(
             http_version = %http_version,
             status = %status_code,
             duration_ms = %duration_ms,
-            r#type = %"loggger-middleware"
+            provider_id = %provider_id,
+            deployment_id = %deployment_id,
+            fallback_count = %fallback_count,
+            r#type = "request"
         );
         response
     }

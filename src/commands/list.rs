@@ -8,14 +8,41 @@ use super::utils::is_server_running;
 
 #[derive(Debug, Deserialize)]
 pub struct StatusResponse {
+    #[serde(default)]
+    pub version: Option<String>,
     pub proxy: Option<String>,
     pub providers: Vec<ProviderInfo>,
 }
 
-#[derive(Debug, Deserialize, Tabled, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ProviderInfo {
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub deployments: Vec<DeploymentInfo>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DeploymentInfo {
+    pub id: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub implicit: bool,
+    pub weight: u32,
+    pub automatic: bool,
+    pub state: String,
+    pub consecutive_failures: u32,
+    pub cooldown_remaining_ms: Option<u64>,
+}
+
+#[derive(Tabled)]
+struct ProviderRow {
     name: String,
     endpoint: String,
+    automatic: String,
+    manual: String,
+    cooling: String,
+    disabled: String,
 }
 
 fn get_status_from_server(port: u16) -> Result<Option<StatusResponse>> {
@@ -27,10 +54,69 @@ fn get_status_from_server(port: u16) -> Result<Option<StatusResponse>> {
     }
 }
 
-fn print_providers_table(providers: &[ProviderInfo]) {
+fn format_deployment_ids<'a>(deployments: impl Iterator<Item = &'a DeploymentInfo>) -> String {
+    let values: Vec<String> = deployments
+        .map(|deployment| {
+            let implicit = if deployment.implicit { "*" } else { "" };
+            if deployment.automatic {
+                format!("{}{}({})", deployment.id, implicit, deployment.weight)
+            } else {
+                format!("{}{}", deployment.id, implicit)
+            }
+        })
+        .collect();
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn format_cooling(deployments: &[DeploymentInfo]) -> String {
+    let values: Vec<String> = deployments
+        .iter()
+        .filter(|deployment| deployment.state == "cooling")
+        .map(|deployment| {
+            let seconds = deployment.cooldown_remaining_ms.unwrap_or_default() / 1000;
+            format!(
+                "{}({}s, fails={})",
+                deployment.id, seconds, deployment.consecutive_failures
+            )
+        })
+        .collect();
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+pub(crate) fn print_providers_table(providers: &[ProviderInfo]) {
     use tabled::settings::Style;
 
-    let mut sorted = providers.to_vec();
+    let mut sorted: Vec<ProviderRow> = providers
+        .iter()
+        .map(|provider| ProviderRow {
+            name: provider.name.clone(),
+            endpoint: provider.endpoint.clone(),
+            automatic: format_deployment_ids(
+                provider
+                    .deployments
+                    .iter()
+                    .filter(|deployment| deployment.enabled && deployment.automatic),
+            ),
+            manual: format_deployment_ids(provider.deployments.iter().filter(|deployment| {
+                deployment.enabled && !deployment.automatic && deployment.state != "disabled"
+            })),
+            cooling: format_cooling(&provider.deployments),
+            disabled: format_deployment_ids(
+                provider
+                    .deployments
+                    .iter()
+                    .filter(|deployment| !deployment.enabled || deployment.state == "disabled"),
+            ),
+        })
+        .collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut table = Table::new(&sorted);

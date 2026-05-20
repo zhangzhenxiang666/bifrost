@@ -116,6 +116,8 @@ pub struct BodyEntry {
 pub struct MappingConfig {
     pub target: String,
     #[serde(default)]
+    pub deployment: Option<String>,
+    #[serde(default)]
     pub headers: Option<Vec<HeaderEntry>>,
     #[serde(default)]
     pub body: Option<Vec<BodyEntry>>,
@@ -147,6 +149,20 @@ pub struct ModelConfig {
     pub body: Option<Vec<BodyEntry>>,
 }
 
+/// Named upstream deployment used by provider deployment pools.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderDeploymentConfig {
+    pub id: String,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_deployment_weight")]
+    pub weight: u32,
+}
+
+pub const IMPLICIT_PROVIDER_DEPLOYMENT_ID: &str = "main";
+
 pub const PROTECTED_BODY_FIELDS: &[&str] = &[
     "model",
     "messages",
@@ -165,9 +181,13 @@ pub const PROTECTED_BODY_FIELDS: &[&str] = &[
 /// Provider configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
+    #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
     pub endpoint: Endpoint,
+    #[serde(default)]
+    pub deployments: Vec<ProviderDeploymentConfig>,
     #[serde(default)]
     pub headers: Option<Vec<HeaderEntry>>,
     #[serde(default)]
@@ -200,6 +220,12 @@ pub struct ServerConfig {
     /// Defaults to {429, 500, 502, 503, 504} if not specified.
     #[serde(default)]
     pub retry_status_codes: Option<HashSet<u16>>,
+    /// Initial cooldown applied to a deployment after a retryable upstream failure.
+    #[serde(default)]
+    pub deployment_cooldown_base_ms: Option<u64>,
+    /// Maximum cooldown for a deployment after repeated retryable upstream failures.
+    #[serde(default)]
+    pub deployment_cooldown_max_ms: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -211,12 +237,22 @@ impl Default for ServerConfig {
             max_retries: Some(5),
             retry_backoff_base_ms: Some(700),
             retry_status_codes: None,
+            deployment_cooldown_base_ms: None,
+            deployment_cooldown_max_ms: None,
         }
     }
 }
 
 fn default_port() -> u16 {
     5564
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_deployment_weight() -> u32 {
+    1
 }
 
 /// Root configuration structure
@@ -258,6 +294,22 @@ fn validate_protected_field(name: &str, context: &str) -> Result<(), crate::Conf
     Ok(())
 }
 
+fn validate_base_url(base_url: &str, context: &str) -> Result<(), crate::ConfigError> {
+    if base_url.trim().is_empty() {
+        return Err(crate::ConfigError::InvalidConfig(format!(
+            "{} has an empty base_url",
+            context
+        )));
+    }
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        return Err(crate::ConfigError::InvalidConfig(format!(
+            "{} has an invalid base_url format: '{}'",
+            context, base_url
+        )));
+    }
+    Ok(())
+}
+
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, crate::ConfigError> {
@@ -277,25 +329,58 @@ impl Config {
                 "Server port cannot be 0".into(),
             ));
         }
+        if let (Some(base), Some(max)) = (
+            self.server.deployment_cooldown_base_ms,
+            self.server.deployment_cooldown_max_ms,
+        ) && base > max
+        {
+            return Err(crate::ConfigError::InvalidConfig(
+                "server.deployment_cooldown_base_ms cannot be greater than server.deployment_cooldown_max_ms".into(),
+            ));
+        }
         for (provider_id, provider) in &self.provider {
-            if provider.api_key.trim().is_empty() {
-                return Err(crate::ConfigError::InvalidConfig(format!(
-                    "Provider '{}' has an empty api_key",
-                    provider_id
-                )));
+            let mut deployment_ids = HashSet::new();
+            let has_legacy_deployment = !provider.api_key.trim().is_empty();
+            if has_legacy_deployment {
+                validate_base_url(&provider.base_url, &format!("Provider '{}'", provider_id))?;
+                deployment_ids.insert(IMPLICIT_PROVIDER_DEPLOYMENT_ID.to_string());
+            } else if !provider.base_url.trim().is_empty() {
+                validate_base_url(&provider.base_url, &format!("Provider '{}'", provider_id))?;
             }
-            if provider.base_url.trim().is_empty() {
-                return Err(crate::ConfigError::InvalidConfig(format!(
-                    "Provider '{}' has an empty base_url",
-                    provider_id
-                )));
+
+            for deployment in &provider.deployments {
+                if deployment.id.trim().is_empty() {
+                    return Err(crate::ConfigError::InvalidConfig(format!(
+                        "Provider '{}' has a deployment with an empty id",
+                        provider_id
+                    )));
+                }
+                validate_base_url(
+                    &deployment.base_url,
+                    &format!("Provider '{}' deployment '{}'", provider_id, deployment.id),
+                )?;
+                if deployment.api_key.trim().is_empty() {
+                    return Err(crate::ConfigError::InvalidConfig(format!(
+                        "Provider '{}' deployment '{}' has an empty api_key",
+                        provider_id, deployment.id
+                    )));
+                }
+                if !deployment_ids.insert(deployment.id.clone()) {
+                    return Err(crate::ConfigError::InvalidConfig(format!(
+                        "Provider '{}' has duplicate deployment id '{}'",
+                        provider_id, deployment.id
+                    )));
+                }
             }
-            if !provider.base_url.starts_with("http://")
-                && !provider.base_url.starts_with("https://")
-            {
+
+            let has_enabled_pool_deployment = provider
+                .deployments
+                .iter()
+                .any(|deployment| deployment.enabled);
+            if !has_legacy_deployment && !has_enabled_pool_deployment {
                 return Err(crate::ConfigError::InvalidConfig(format!(
-                    "Provider '{}' has an invalid base_url format: '{}'",
-                    provider_id, provider.base_url
+                    "Provider '{}' must define api_key with base_url or at least one enabled deployment",
+                    provider_id
                 )));
             }
 
@@ -380,6 +465,24 @@ impl Config {
 
         for (alias_name, alias_entry) in &self.alias {
             if let AliasEntry::Complex(mapping) = alias_entry {
+                if let Some(deployment) = &mapping.deployment
+                    && let Some((provider_id, _)) = mapping.target.split_once('@')
+                    && let Some(provider) = self.provider.get(provider_id)
+                {
+                    let matches_legacy = deployment == IMPLICIT_PROVIDER_DEPLOYMENT_ID
+                        && !provider.api_key.trim().is_empty();
+                    let matches_deployment = provider
+                        .deployments
+                        .iter()
+                        .any(|candidate| candidate.enabled && candidate.id == *deployment);
+                    if !matches_legacy && !matches_deployment {
+                        return Err(crate::ConfigError::InvalidConfig(format!(
+                            "Alias '{}' references unknown deployment '{}' for provider '{}'",
+                            alias_name, deployment, provider_id
+                        )));
+                    }
+                }
+
                 if let Some(headers) = &mapping.headers {
                     for entry in headers {
                         validate_condition(
@@ -474,6 +577,206 @@ mod tests {
         "#;
         let result: Result<ProviderConfig, _> = toml::from_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_provider_deployment_pool_parses_without_legacy_fields() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "subscription"
+            base_url = "https://subscription.example.com/v1"
+            api_key = "subscription-key"
+
+            [[provider.test.deployments]]
+            id = "payg"
+            base_url = "https://api.example.com/v1"
+            api_key = "payg-key"
+        "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+
+        let provider = config.provider.get("test").unwrap();
+        assert_eq!(provider.api_key, "");
+        assert_eq!(provider.base_url, "");
+        assert_eq!(provider.deployments.len(), 2);
+        assert!(
+            provider
+                .deployments
+                .iter()
+                .all(|deployment| deployment.enabled)
+        );
+        assert!(
+            provider
+                .deployments
+                .iter()
+                .all(|deployment| deployment.weight == 1)
+        );
+    }
+
+    #[test]
+    fn test_provider_deployment_weight_parses() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "subscription"
+            base_url = "https://subscription.example.com/v1"
+            api_key = "subscription-key"
+            weight = 3
+        "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+
+        let provider = config.provider.get("test").unwrap();
+        assert_eq!(provider.deployments[0].weight, 3);
+    }
+
+    #[test]
+    fn test_provider_deployment_zero_weight_is_manual_only() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "work"
+            base_url = "https://api.example.com"
+            api_key = "work-key"
+            weight = 0
+        "#,
+        )
+        .unwrap();
+
+        config.validate().unwrap();
+        let provider = config.provider.get("test").unwrap();
+        assert_eq!(provider.deployments[0].weight, 0);
+    }
+
+    #[test]
+    fn test_validate_provider_requires_api_key_or_enabled_key() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_provider_deployment_ids() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "work"
+            base_url = "https://api-a.example.com"
+            api_key = "key-a"
+
+            [[provider.test.deployments]]
+            id = "work"
+            base_url = "https://api-b.example.com"
+            api_key = "key-b"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_implicit_main_deployment_id() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            base_url = "https://api-main.example.com"
+            api_key = "main-key"
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "main"
+            base_url = "https://api-explicit.example.com"
+            api_key = "explicit-key"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_alias_deployment_reference() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "work"
+            base_url = "https://api.example.com"
+            api_key = "work-key"
+
+            [alias.my-model]
+            target = "test@gpt-4"
+            deployment = "work"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_alias_implicit_main_deployment_reference() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            base_url = "https://api.example.com"
+            api_key = "test-key"
+            endpoint = "openai"
+
+            [alias.my-model]
+            target = "test@gpt-4"
+            deployment = "main"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_alias_unknown_deployment_reference() {
+        let config = Config::from_toml(
+            r#"
+            [provider.test]
+            endpoint = "openai"
+
+            [[provider.test.deployments]]
+            id = "work"
+            base_url = "https://api.example.com"
+            api_key = "work-key"
+
+            [alias.my-model]
+            target = "test@gpt-4"
+            deployment = "missing"
+        "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
     }
 
     #[test]

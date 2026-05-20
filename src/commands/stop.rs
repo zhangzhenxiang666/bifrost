@@ -30,9 +30,17 @@ pub fn cmd_stop() -> Result<()> {
     if let Some((name, memory, cpu)) = get_process_info(pid) {
         if let Ok(config) = ServerConfig::from_file(&get_config_path()?) {
             let proxy = config.proxy.as_deref().unwrap_or("None");
-            print_process_table(pid, &name, memory, cpu, Some(config.port), Some(proxy));
+            print_process_table(
+                pid,
+                &name,
+                memory,
+                cpu,
+                Some(config.port),
+                Some(proxy),
+                None,
+            );
         } else {
-            print_process_table(pid, &name, memory, cpu, None, None);
+            print_process_table(pid, &name, memory, cpu, None, None, None);
         }
     }
     println!();

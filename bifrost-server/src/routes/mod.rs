@@ -1,6 +1,6 @@
 //! Routes module for HTTP endpoints
 
-use bifrost_shared::{Endpoint, ProviderConfig};
+use bifrost_shared::Endpoint;
 use http::HeaderMap;
 
 use crate::util;
@@ -17,26 +17,26 @@ pub enum RouteEndpoint {
     AnthropicMessages,
 }
 
-pub fn build_request_parts(provider: &ProviderConfig) -> (String, HeaderMap) {
-    match provider.endpoint {
+pub fn build_request_url(base_url: &str, endpoint: &Endpoint) -> String {
+    match endpoint {
+        Endpoint::OpenAI => util::join_url_paths(base_url, "/chat/completions"),
+        Endpoint::Anthropic => util::join_url_paths(base_url, "/v1/messages"),
+    }
+}
+
+pub fn build_auth_headers(endpoint: &Endpoint, api_key: &str) -> HeaderMap {
+    match endpoint {
         Endpoint::OpenAI => {
             let mut map = HeaderMap::new();
             map.insert(
                 http::header::AUTHORIZATION,
-                format!("Bearer {}", &provider.api_key).parse().unwrap(),
+                format!("Bearer {}", api_key).parse().unwrap(),
             );
-
-            (
-                util::join_url_paths(&provider.base_url, "/chat/completions"),
-                map,
-            )
+            map
         }
         Endpoint::Anthropic => {
             let mut map = HeaderMap::new();
-            map.insert(
-                crate::adapter::X_API_KEY.clone(),
-                provider.api_key.clone().parse().unwrap(),
-            );
+            map.insert(crate::adapter::X_API_KEY.clone(), api_key.parse().unwrap());
             map.insert(
                 crate::adapter::ANTHROPIC_VERSION.0.clone(),
                 crate::adapter::ANTHROPIC_VERSION.1.clone(),
@@ -45,10 +45,7 @@ pub fn build_request_parts(provider: &ProviderConfig) -> (String, HeaderMap) {
                 http::header::USER_AGENT,
                 "Anthropic/Python 0.84.0".parse().unwrap(),
             );
-            (
-                util::join_url_paths(&provider.base_url, "/v1/messages"),
-                map,
-            )
+            map
         }
     }
 }

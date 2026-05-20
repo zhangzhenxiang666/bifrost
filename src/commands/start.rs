@@ -91,10 +91,18 @@ pub fn cmd_start_internal() -> Result<()> {
             if let Ok(config) = ServerConfig::from_file(&config_path) {
                 let env_proxy = get_env_proxy();
                 let proxy = config.proxy.clone().or(env_proxy);
-                print_process_table(pid, &name, memory, cpu, Some(config.port), proxy.as_deref());
+                print_process_table(
+                    pid,
+                    &name,
+                    memory,
+                    cpu,
+                    Some(config.port),
+                    proxy.as_deref(),
+                    None,
+                );
             } else {
                 let env_proxy = get_env_proxy();
-                print_process_table(pid, &name, memory, cpu, None, env_proxy.as_deref());
+                print_process_table(pid, &name, memory, cpu, None, env_proxy.as_deref(), None);
             }
         }
 

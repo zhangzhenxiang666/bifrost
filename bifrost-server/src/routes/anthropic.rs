@@ -61,6 +61,7 @@ mod tests {
                 base_url: mock_server_uri.to_string(),
                 api_key: "test-key".to_string(),
                 endpoint: Endpoint::Anthropic,
+                deployments: Vec::new(),
                 headers: None,
                 body: None,
                 models: None,

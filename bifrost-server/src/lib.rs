@@ -23,7 +23,7 @@ use crate::routes::{
     anthropic::messages, anthropic::messages_v1, openai::chat_completions,
     openai::chat_completions_v1, openai::responses, openai::responses_v1, status::status,
 };
-use crate::state::{AppState, get_global_state, set_global_state};
+use crate::state::AppState;
 
 use axum::Router;
 use std::net::SocketAddr;
@@ -50,7 +50,7 @@ async fn server(config: Config) -> anyhow::Result<()> {
 
     let registry = ProviderRegistry::from_config(&config);
     let proxy = config.server.proxy.clone();
-    set_global_state(AppState::new(registry, proxy));
+    let state = AppState::new(registry, proxy);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -77,9 +77,7 @@ async fn server(config: Config) -> anyhow::Result<()> {
         .route("/status", axum::routing::get(status))
         .merge(llm_router);
 
-    let app = main_router
-        .with_state(get_global_state().clone())
-        .layer(cors);
+    let app = main_router.with_state(state).layer(cors);
 
     // Bind and listen
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

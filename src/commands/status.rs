@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use super::list::StatusResponse;
+use super::list::{StatusResponse, print_providers_table};
 use super::printing::print_process_table;
 use super::start::ServerConfig;
 use super::utils::{get_env_proxy, get_process_info, get_stored_pid, is_server_running};
@@ -26,22 +26,33 @@ pub fn cmd_status() -> Result<()> {
         );
         println!();
 
-        let (proxy, port): (Option<String>, Option<u16>) =
-            if let Some(status) = get_status_from_server(5564).ok().flatten() {
-                (status.proxy, Some(5564))
-            } else {
-                let config = ServerConfig::from_file(&config_path).ok();
-                let env_proxy = get_env_proxy();
-                let proxy = config.as_ref().and_then(|c| c.proxy.clone()).or(env_proxy);
-                (proxy, config.map(|c| c.port))
-            };
+        let live_status = get_status_from_server(5564).ok().flatten();
+        let (proxy, port): (Option<String>, Option<u16>) = if let Some(status) = &live_status {
+            (status.proxy.clone(), Some(5564))
+        } else {
+            let config = ServerConfig::from_file(&config_path).ok();
+            let env_proxy = get_env_proxy();
+            let proxy = config.as_ref().and_then(|c| c.proxy.clone()).or(env_proxy);
+            (proxy, config.map(|c| c.port))
+        };
+        let version = live_status
+            .as_ref()
+            .and_then(|status| status.version.as_deref());
 
         if let Some(pid) = get_stored_pid() {
             if let Some((name, memory, cpu)) = get_process_info(pid) {
-                print_process_table(pid, &name, memory, cpu, port, proxy.as_deref());
+                print_process_table(pid, &name, memory, cpu, port, proxy.as_deref(), version);
             } else {
-                print_process_table(pid, "unknown", 0.0, 0.0, port, proxy.as_deref());
+                print_process_table(pid, "unknown", 0.0, 0.0, port, proxy.as_deref(), version);
             }
+        }
+
+        if let Some(status) = live_status
+            && !status.providers.is_empty()
+        {
+            println!("{}", "Providers".bold());
+            print_providers_table(&status.providers);
+            println!();
         }
     } else {
         println!(

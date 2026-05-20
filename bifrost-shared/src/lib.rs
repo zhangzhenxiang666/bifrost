@@ -15,6 +15,9 @@ pub mod one_or_many;
 pub use one_or_many::deserialize_one_or_many;
 
 pub mod types;
-pub use types::{AliasEntry, Config, Endpoint, ModelConfig, ProviderConfig, ServerConfig};
+pub use types::{
+    AliasEntry, Config, Endpoint, IMPLICIT_PROVIDER_DEPLOYMENT_ID, ModelConfig, ProviderConfig,
+    ProviderDeploymentConfig, ServerConfig,
+};
 
 pub mod usage;
