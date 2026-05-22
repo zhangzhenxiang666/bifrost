@@ -361,6 +361,8 @@ fn try_extract_usage(
     endpoint: &Endpoint,
     prompt_tokens: &mut u32,
     completion_tokens: &mut u32,
+    cached_tokens: &mut Option<u32>,
+    cache_creation_tokens: &mut Option<u32>,
 ) {
     match endpoint {
         Endpoint::OpenAI => {
@@ -373,6 +375,15 @@ fn try_extract_usage(
                     .get("completion_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
+                let cached = usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .filter(|&v| v > 0);
+                if cached.is_some() {
+                    *cached_tokens = cached;
+                }
             }
         }
         Endpoint::Anthropic => {
@@ -384,6 +395,21 @@ fn try_extract_usage(
                     .get("input_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
+                let cache_read = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let cache_creation = usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                *prompt_tokens += cache_read + cache_creation;
+                if cache_read > 0 {
+                    *cached_tokens = Some(cache_read);
+                }
+                if cache_creation > 0 {
+                    *cache_creation_tokens = Some(cache_creation);
+                }
             } else if event == "message_delta"
                 && let Some(usage) = chunk.get("usage").and_then(|u| u.as_object())
             {
@@ -391,6 +417,31 @@ fn try_extract_usage(
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
+                // Some providers send input_tokens in message_delta instead of message_start.
+                if *prompt_tokens == 0
+                    && let Some(delta_input) = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32)
+                {
+                    *prompt_tokens = delta_input;
+                }
+                let cache_read = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let cache_creation = usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                if cache_read > 0 && cached_tokens.is_none() {
+                    *cached_tokens = Some(cache_read);
+                    *prompt_tokens += cache_read;
+                }
+                if cache_creation > 0 && cache_creation_tokens.is_none() {
+                    *cache_creation_tokens = Some(cache_creation);
+                    *prompt_tokens += cache_creation;
+                }
             }
         }
     }
@@ -591,6 +642,8 @@ pub async fn process_stream_request(
         );
         let mut prompt_tokens: u32 = 0;
         let mut completion_tokens: u32 = 0;
+        let mut cached_tokens: Option<u32> = None;
+        let mut cache_creation_tokens: Option<u32> = None;
         let mut consecutive_errors: u32 = 0;
         const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
@@ -618,6 +671,8 @@ pub async fn process_stream_request(
                         &provider_endpoint,
                         &mut prompt_tokens,
                         &mut completion_tokens,
+                        &mut cached_tokens,
+                        &mut cache_creation_tokens,
                     );
 
                     let transform = executor.execute_stream_chunk(chunk, event.event).await;
@@ -676,6 +731,7 @@ pub async fn process_stream_request(
             Some(&deployment_id),
             prompt_tokens,
             completion_tokens,
+            cached_tokens,
         );
         // Channel will be closed automatically when tx is dropped
         drop(tx);

@@ -205,8 +205,8 @@ fn map_stop_reason(stop_reason: Option<Value>) -> Value {
 
 /// Transform Anthropic usage to OpenAI usage format.
 ///
-/// Anthropic: { "input_tokens": 100, "output_tokens": 50 }
-/// OpenAI: { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150 }
+/// Anthropic: { "input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 10 }
+/// OpenAI: { "prompt_tokens": 140, "completion_tokens": 50, "total_tokens": 190, "prompt_tokens_details": { "cached_tokens": 30 } }
 fn transform_usage(usage: Option<Value>) -> Option<Value> {
     let Value::Object(usage_obj) = usage? else {
         return None;
@@ -220,12 +220,33 @@ fn transform_usage(usage: Option<Value>) -> Option<Value> {
         .get("output_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let cache_read_input_tokens = usage_obj
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_creation_input_tokens = usage_obj
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
-    Some(json!({
-        "prompt_tokens": input_tokens,
+    let prompt_tokens = input_tokens + cache_read_input_tokens + cache_creation_input_tokens;
+
+    let mut result = json!({
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens
-    }))
+        "total_tokens": prompt_tokens + output_tokens
+    });
+
+    if cache_read_input_tokens > 0
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert(
+            "prompt_tokens_details".to_string(),
+            json!({ "cached_tokens": cache_read_input_tokens }),
+        );
+    }
+
+    Some(result)
 }
 
 #[cfg(test)]
@@ -737,5 +758,84 @@ mod tests {
             }
         });
         assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // 缓存 Token 转换
+    // ============================================
+    #[test]
+    fn test_usage_with_cache_read_tokens() {
+        let input = json!({
+            "id": "msg_cache",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello"}],
+            "model": "claude-3-5-sonnet-20241022",
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 70,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 30
+            }
+        });
+
+        let result = anthropic_to_openai_response(input).unwrap();
+        assert_eq!(result["usage"]["prompt_tokens"], 100);
+        assert_eq!(result["usage"]["completion_tokens"], 50);
+        assert_eq!(result["usage"]["total_tokens"], 150);
+        assert_eq!(
+            result["usage"]["prompt_tokens_details"]["cached_tokens"],
+            30
+        );
+    }
+
+    #[test]
+    fn test_usage_with_both_cache_fields() {
+        let input = json!({
+            "id": "msg_both_cache",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello"}],
+            "model": "claude-3-5-sonnet-20241022",
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 60,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 10
+            }
+        });
+
+        let result = anthropic_to_openai_response(input).unwrap();
+        // prompt_tokens = 60 + 20 + 10 = 90
+        assert_eq!(result["usage"]["prompt_tokens"], 90);
+        assert_eq!(result["usage"]["completion_tokens"], 50);
+        assert_eq!(result["usage"]["total_tokens"], 140);
+        // cached_tokens only includes cache_read_input_tokens
+        assert_eq!(
+            result["usage"]["prompt_tokens_details"]["cached_tokens"],
+            20
+        );
+    }
+
+    #[test]
+    fn test_usage_without_cache_tokens() {
+        let input = json!({
+            "id": "msg_no_cache",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello"}],
+            "model": "claude-3-5-sonnet-20241022",
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50
+            }
+        });
+
+        let result = anthropic_to_openai_response(input).unwrap();
+        assert_eq!(result["usage"]["prompt_tokens"], 100);
+        assert_eq!(result["usage"]["completion_tokens"], 50);
+        assert!(result["usage"].get("prompt_tokens_details").is_none());
     }
 }

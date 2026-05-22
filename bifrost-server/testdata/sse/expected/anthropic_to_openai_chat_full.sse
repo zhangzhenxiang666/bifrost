@@ -34,5 +34,5 @@ data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":":\"Asia/Shan
 
 data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"}"},"index":1}]},"finish_reason":null,"index":0}],"created":1778139066,"id":"msg_stream_full","model":"claude-3-5-sonnet-20241022","object":"chat.completion.chunk"}
 
-data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"created":1778139066,"id":"msg_stream_full","model":"claude-3-5-sonnet-20241022","object":"chat.completion.chunk","usage":{"completion_tokens":64,"prompt_tokens":128}}
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"created":1778139066,"id":"msg_stream_full","model":"claude-3-5-sonnet-20241022","object":"chat.completion.chunk","usage":{"completion_tokens":64,"prompt_tokens":128,"total_tokens":192}}
 

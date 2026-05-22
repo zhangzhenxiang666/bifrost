@@ -19,6 +19,8 @@ struct AnthropicToOpenAIStreamState {
     id: String,
     model: String,
     input_tokens: u32,
+    cache_read_input_tokens: u32,
+    cache_creation_input_tokens: u32,
     tool_index: u32,
     flags: u8,
 }
@@ -35,6 +37,8 @@ impl AnthropicToOpenAIStreamState {
             id: String::new(),
             model: String::new(),
             input_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             tool_index: 0,
             flags: 0,
         }
@@ -112,7 +116,7 @@ impl AnthropicToOpenAIStreamProcessor {
             "content_block_start" => convert_content_block_start(chunk, self.state_mut()),
             "content_block_delta" => convert_content_block_delta(chunk, self.state()),
             "content_block_stop" => convert_content_block_stop(self.state_mut()),
-            "message_delta" => convert_message_delta(chunk, self.state()),
+            "message_delta" => convert_message_delta(chunk, self.state_mut()),
             _ => Ok(StreamChunkTransform::new_empty()),
         }
     }
@@ -145,6 +149,14 @@ fn convert_message_start(
     let usage = message.get("usage").and_then(|v| v.as_object());
     state.input_tokens = usage
         .and_then(|u| u.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    state.cache_read_input_tokens = usage
+        .and_then(|u| u.get("cache_read_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    state.cache_creation_input_tokens = usage
+        .and_then(|u| u.get("cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
@@ -263,7 +275,7 @@ fn convert_content_block_delta(
 
 fn convert_message_delta(
     data: Value,
-    state: &AnthropicToOpenAIStreamState,
+    state: &mut AnthropicToOpenAIStreamState,
 ) -> Result<StreamChunkTransform, LlmMapError> {
     if state.id.is_empty() {
         return Ok(StreamChunkTransform::new_empty());
@@ -292,10 +304,54 @@ fn convert_message_delta(
         })
         .unwrap_or("stop");
 
+    // Some providers send input_tokens in message_delta instead of message_start.
+    if let Some(delta_input_tokens) = usage
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        && state.input_tokens == 0
+    {
+        state.input_tokens = delta_input_tokens;
+    }
+    if let Some(delta_cache_read) = usage
+        .and_then(|u| u.get("cache_read_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        && state.cache_read_input_tokens == 0
+    {
+        state.cache_read_input_tokens = delta_cache_read;
+    }
+    if let Some(delta_cache_creation) = usage
+        .and_then(|u| u.get("cache_creation_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        && state.cache_creation_input_tokens == 0
+    {
+        state.cache_creation_input_tokens = delta_cache_creation;
+    }
+
     let output_tokens = usage
         .and_then(|u| u.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+
+    let prompt_tokens =
+        state.input_tokens + state.cache_read_input_tokens + state.cache_creation_input_tokens;
+
+    let mut usage_obj = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": prompt_tokens + output_tokens
+    });
+
+    if state.cache_read_input_tokens > 0
+        && let Some(obj) = usage_obj.as_object_mut()
+    {
+        obj.insert(
+            "prompt_tokens_details".to_string(),
+            json!({ "cached_tokens": state.cache_read_input_tokens }),
+        );
+    }
 
     let data = json!({
     "id": state.id,
@@ -307,10 +363,7 @@ fn convert_message_delta(
         "delta": {},
         "finish_reason": stop_reason
     }],
-    "usage": {
-        "prompt_tokens": state.input_tokens,
-        "completion_tokens": output_tokens
-    }});
+    "usage": usage_obj});
 
     Ok(StreamChunkTransform::new(data))
 }
@@ -343,5 +396,125 @@ mod tests {
         }
 
         assert_eq!(normalize_stream_events(output_events), expected_events);
+    }
+
+    #[test]
+    fn test_stream_usage_with_input_tokens_in_message_delta() {
+        let processor = AnthropicToOpenAIStreamProcessor::new();
+
+        // message_start without input_tokens
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_delta_input",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-3-5-sonnet",
+                "content": [],
+                "stop_reason": null,
+                "usage": {"input_tokens": 0, "output_tokens": 1}
+            }
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("message_start", start)
+            .unwrap();
+
+        // Some content
+        let block_start = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("content_block_start", block_start)
+            .unwrap();
+
+        let delta = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "Hello"}
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("content_block_delta", delta)
+            .unwrap();
+
+        let block_stop = json!({"type": "content_block_stop", "index": 0});
+        let _ = processor
+            .anthropic_to_openai_stream("content_block_stop", block_stop)
+            .unwrap();
+
+        // message_delta with input_tokens (provider sends it here instead)
+        let msg_delta = json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"input_tokens": 200, "output_tokens": 50}
+        });
+        let result = processor
+            .anthropic_to_openai_stream("message_delta", msg_delta)
+            .unwrap();
+        let events = result.into_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0].0;
+        assert_eq!(event["usage"]["prompt_tokens"], 200);
+        assert_eq!(event["usage"]["completion_tokens"], 50);
+        assert_eq!(event["usage"]["total_tokens"], 250);
+    }
+
+    #[test]
+    fn test_stream_usage_with_cache_tokens_in_message_delta() {
+        let processor = AnthropicToOpenAIStreamProcessor::new();
+
+        // message_start with input_tokens but no cache tokens
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_cache_delta",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-3-5-sonnet",
+                "content": [],
+                "stop_reason": null,
+                "usage": {"input_tokens": 80, "output_tokens": 1}
+            }
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("message_start", start)
+            .unwrap();
+
+        // Some content
+        let block_start = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("content_block_start", block_start)
+            .unwrap();
+
+        let block_stop = json!({"type": "content_block_stop", "index": 0});
+        let _ = processor
+            .anthropic_to_openai_stream("content_block_stop", block_stop)
+            .unwrap();
+
+        // message_delta with cache tokens
+        let msg_delta = json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "output_tokens": 50,
+                "cache_read_input_tokens": 20
+            }
+        });
+        let result = processor
+            .anthropic_to_openai_stream("message_delta", msg_delta)
+            .unwrap();
+        let events = result.into_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0].0;
+        // prompt_tokens = input_tokens(80) + cache_read(20) = 100
+        assert_eq!(event["usage"]["prompt_tokens"], 100);
+        assert_eq!(event["usage"]["completion_tokens"], 50);
+        assert_eq!(event["usage"]["total_tokens"], 150);
+        assert_eq!(event["usage"]["prompt_tokens_details"]["cached_tokens"], 20);
     }
 }

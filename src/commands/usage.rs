@@ -65,6 +65,7 @@ struct MonthRow {
     deployment: String,
     requests: String,
     prompt: String,
+    cached: String,
     completion: String,
     total: String,
 }
@@ -77,6 +78,7 @@ struct GroupedRow {
     model: String,
     requests: String,
     prompt: String,
+    cached: String,
     completion: String,
     total: String,
 }
@@ -259,7 +261,7 @@ fn cmd_month(month_str: Option<&str>) -> Result<()> {
     }
 
     use std::collections::BTreeMap;
-    type StatsVal = (u32, u32, u32);
+    type StatsVal = (u32, u32, u32, u32);
 
     let mut by_provider: BTreeMap<String, BTreeMap<String, StatsVal>> = BTreeMap::new();
     for r in &records {
@@ -267,21 +269,23 @@ fn cmd_month(month_str: Option<&str>) -> Result<()> {
             .entry(r.record.provider.clone())
             .or_default()
             .entry(deployment_label(&r.record).to_string())
-            .or_insert((0, 0, 0));
+            .or_insert((0, 0, 0, 0));
         entry.0 += 1;
         entry.1 += r.record.prompt_tokens;
-        entry.2 += r.record.completion_tokens;
+        entry.2 += r.record.cached_tokens.unwrap_or(0);
+        entry.3 += r.record.completion_tokens;
     }
 
     let mut rows: Vec<MonthRow> = Vec::new();
     for (provider, deployments) in by_provider {
-        for (deployment, (requests, prompt, completion)) in deployments {
+        for (deployment, (requests, prompt, cached, completion)) in deployments {
             let total = prompt + completion;
             rows.push(MonthRow {
                 provider: provider.clone(),
                 deployment,
                 requests: requests.to_string(),
                 prompt: format_tokens(prompt),
+                cached: format_tokens(cached),
                 completion: format_tokens(completion),
                 total: format_tokens(total),
             });
@@ -304,16 +308,22 @@ fn cmd_month(month_str: Option<&str>) -> Result<()> {
 
     let total_requests = records.len();
     let total_prompt: u32 = records.iter().map(|r| r.record.prompt_tokens).sum();
+    let total_cached: u32 = records
+        .iter()
+        .map(|r| r.record.cached_tokens.unwrap_or(0))
+        .sum();
     let total_completion: u32 = records.iter().map(|r| r.record.completion_tokens).sum();
     let total_tokens = total_prompt + total_completion;
 
     println!();
     println!(
-        "Total: {} {} | {} {} | {} {} | {} {}",
+        "Total: {} {} | {} {} | {} {} | {} {} | {} {}",
         total_requests.to_string().bold().green(),
         "requests".bold(),
         format_tokens(total_prompt).bold().cyan(),
         "prompt".bold(),
+        format_tokens(total_cached).bold().blue(),
+        "cached".bold(),
         format_tokens(total_completion).bold().yellow(),
         "completion".bold(),
         format_tokens(total_tokens).bold().magenta(),
@@ -390,7 +400,7 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
         type ProviderKey = String;
         type DeploymentKey = String;
         type ModelKey = String;
-        type StatsVal = (u32, u32, u32);
+        type StatsVal = (u32, u32, u32, u32);
         type ModelStats = BTreeMap<ModelKey, StatsVal>;
         type DeploymentStats = BTreeMap<DeploymentKey, ModelStats>;
         type ProviderStats = BTreeMap<ProviderKey, DeploymentStats>;
@@ -407,17 +417,18 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                 .entry(deployment_label(&r.record).to_string())
                 .or_default()
                 .entry(r.record.model.clone())
-                .or_insert((0, 0, 0));
+                .or_insert((0, 0, 0, 0));
             entry.0 += 1;
             entry.1 += r.record.prompt_tokens;
-            entry.2 += r.record.completion_tokens;
+            entry.2 += r.record.cached_tokens.unwrap_or(0);
+            entry.3 += r.record.completion_tokens;
         }
 
         let mut rows: Vec<GroupedRow> = Vec::new();
         for (slot, providers) in by_slot {
             for (provider, deployments) in providers {
                 for (deployment, models) in deployments {
-                    for (model, (requests, prompt, completion)) in models {
+                    for (model, (requests, prompt, cached, completion)) in models {
                         let total = prompt + completion;
                         rows.push(GroupedRow {
                             date: format!("{:02}:00-{:02}:59", slot, slot + 4),
@@ -426,6 +437,7 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                             model,
                             requests: requests.to_string(),
                             prompt: format_tokens(prompt),
+                            cached: format_tokens(cached),
                             completion: format_tokens(completion),
                             total: format_tokens(total),
                         });
@@ -503,16 +515,22 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let total_requests = filtered.len();
         let total_prompt: u32 = filtered.iter().map(|r| r.record.prompt_tokens).sum();
+        let total_cached: u32 = filtered
+            .iter()
+            .map(|r| r.record.cached_tokens.unwrap_or(0))
+            .sum();
         let total_completion: u32 = filtered.iter().map(|r| r.record.completion_tokens).sum();
         let total_tokens = total_prompt + total_completion;
 
         println!();
         println!(
-            "Total: {} {} | {} {} | {} {} | {} {}",
+            "Total: {} {} | {} {} | {} {} | {} {} | {} {}",
             total_requests.to_string().bold().green(),
             "requests".bold(),
             format_tokens(total_prompt).bold().cyan(),
             "prompt".bold(),
+            format_tokens(total_cached).bold().blue(),
+            "cached".bold(),
             format_tokens(total_completion).bold().yellow(),
             "completion".bold(),
             format_tokens(total_tokens).bold().magenta(),
@@ -524,7 +542,7 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
         type ProviderKey = String;
         type DeploymentKey = String;
         type ModelKey = String;
-        type StatsVal = (u32, u32, u32);
+        type StatsVal = (u32, u32, u32, u32);
         type ModelStats = BTreeMap<ModelKey, StatsVal>;
         type DeploymentStats = BTreeMap<DeploymentKey, ModelStats>;
         type ProviderStats = BTreeMap<ProviderKey, DeploymentStats>;
@@ -540,17 +558,18 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                 .entry(deployment_label(&r.record).to_string())
                 .or_default()
                 .entry(r.record.model.clone())
-                .or_insert((0, 0, 0));
+                .or_insert((0, 0, 0, 0));
             entry.0 += 1;
             entry.1 += r.record.prompt_tokens;
-            entry.2 += r.record.completion_tokens;
+            entry.2 += r.record.cached_tokens.unwrap_or(0);
+            entry.3 += r.record.completion_tokens;
         }
 
         let mut rows: Vec<GroupedRow> = Vec::new();
         for (date, providers) in by_date_provider_model {
             for (provider, deployments) in providers {
                 for (deployment, models) in deployments {
-                    for (model, (requests, prompt, completion)) in models {
+                    for (model, (requests, prompt, cached, completion)) in models {
                         let total = prompt + completion;
                         rows.push(GroupedRow {
                             date: date.clone(),
@@ -559,6 +578,7 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
                             model,
                             requests: requests.to_string(),
                             prompt: format_tokens(prompt),
+                            cached: format_tokens(cached),
                             completion: format_tokens(completion),
                             total: format_tokens(total),
                         });
@@ -636,16 +656,22 @@ pub fn cmd_usage(args: UsageArgs) -> Result<()> {
 
         let total_requests = filtered.len();
         let total_prompt: u32 = filtered.iter().map(|r| r.record.prompt_tokens).sum();
+        let total_cached: u32 = filtered
+            .iter()
+            .map(|r| r.record.cached_tokens.unwrap_or(0))
+            .sum();
         let total_completion: u32 = filtered.iter().map(|r| r.record.completion_tokens).sum();
         let total_tokens = total_prompt + total_completion;
 
         println!();
         println!(
-            "Total: {} {} | {} {} | {} {} | {} {}",
+            "Total: {} {} | {} {} | {} {} | {} {} | {} {}",
             total_requests.to_string().bold().green(),
             "requests".bold(),
             format_tokens(total_prompt).bold().cyan(),
             "prompt".bold(),
+            format_tokens(total_cached).bold().blue(),
+            "cached".bold(),
             format_tokens(total_completion).bold().yellow(),
             "completion".bold(),
             format_tokens(total_tokens).bold().magenta(),

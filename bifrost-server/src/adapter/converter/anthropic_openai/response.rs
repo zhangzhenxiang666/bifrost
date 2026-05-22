@@ -15,7 +15,7 @@ pub fn transform_usage_openai_to_anthropic(usage: Option<&Value>) -> Value {
         });
     };
 
-    let input_tokens = usage_obj
+    let prompt_tokens = usage_obj
         .get("prompt_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
@@ -25,12 +25,31 @@ pub fn transform_usage_openai_to_anthropic(usage: Option<&Value>) -> Value {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
-    // For Anthropic, we just use output_tokens
-    // (OpenAI's completion_tokens already includes reasoning if present)
-    json!({
+    let cached_tokens = usage_obj
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .filter(|&v| v > 0);
+
+    // input_tokens excludes cached tokens (Anthropic counts them separately)
+    let input_tokens = prompt_tokens.saturating_sub(cached_tokens.unwrap_or(0));
+
+    let mut result = json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
-    })
+    });
+
+    if let Some(cached) = cached_tokens
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert(
+            "cache_read_input_tokens".into(),
+            Value::Number(cached.into()),
+        );
+    }
+
+    result
 }
 
 /// Transform OpenAI response to Anthropic response format
@@ -858,5 +877,38 @@ mod tests {
 
         let result = openai_to_anthropic_response(input).unwrap();
         assert_eq!(result, expected);
+    }
+
+    // ============================================
+    // 缓存 Token 转换
+    // ============================================
+    #[test]
+    fn test_usage_with_cached_tokens() {
+        let input = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {
+                "cached_tokens": 30
+            }
+        });
+
+        let result = transform_usage_openai_to_anthropic(Some(&input));
+        // input_tokens = prompt_tokens - cached_tokens = 100 - 30 = 70
+        assert_eq!(result["input_tokens"], 70);
+        assert_eq!(result["output_tokens"], 50);
+        assert_eq!(result["cache_read_input_tokens"], 30);
+    }
+
+    #[test]
+    fn test_usage_without_cached_tokens() {
+        let input = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50
+        });
+
+        let result = transform_usage_openai_to_anthropic(Some(&input));
+        assert_eq!(result["input_tokens"], 100);
+        assert_eq!(result["output_tokens"], 50);
+        assert!(result.get("cache_read_input_tokens").is_none());
     }
 }

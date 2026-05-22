@@ -186,7 +186,7 @@ impl OpenAIToAnthropicStreamProcessor {
 
         let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let model = obj.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        let input_tokens = usage
+        let prompt_tokens = usage
             .and_then(|u| u.get("prompt_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
@@ -194,6 +194,30 @@ impl OpenAIToAnthropicStreamProcessor {
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as u32;
+
+        let cached_tokens = usage
+            .and_then(|u| u.get("prompt_tokens_details"))
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .filter(|&v| v > 0);
+
+        // input_tokens excludes cached tokens (Anthropic counts them separately)
+        let input_tokens = prompt_tokens.saturating_sub(cached_tokens.unwrap_or(0));
+
+        let mut message_usage = json!({
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens
+        });
+
+        if let Some(cached) = cached_tokens
+            && let Some(obj) = message_usage.as_object_mut()
+        {
+            obj.insert(
+                "cache_read_input_tokens".into(),
+                Value::Number(cached.into()),
+            );
+        }
 
         events.push((
             json!({
@@ -206,10 +230,7 @@ impl OpenAIToAnthropicStreamProcessor {
                     "model": model,
                     "stop_reason": null,
                     "stop_sequence": null,
-                    "usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens
-                    }
+                    "usage": message_usage
                 }
             }),
             Some("message_start".to_string()),
@@ -670,5 +691,39 @@ mod tests {
         }
 
         assert_eq!(normalize_stream_events(output_events), expected_events);
+    }
+
+    #[test]
+    fn test_stream_usage_with_cached_tokens() {
+        let processor = OpenAIToAnthropicStreamProcessor::new();
+
+        let chunk = json!({
+            "id": "chatcmpl-cache",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant" },
+                "finish_reason": null
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {
+                    "cached_tokens": 30
+                }
+            }
+        });
+
+        let result = processor.openai_stream_to_anthropic_stream(chunk).unwrap();
+        let events = result.events;
+
+        assert_eq!(events[0].0["type"], "message_start");
+        // input_tokens = prompt_tokens(100) - cached_tokens(30) = 70
+        assert_eq!(events[0].0["message"]["usage"]["input_tokens"], 70);
+        assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 50);
+        assert_eq!(
+            events[0].0["message"]["usage"]["cache_read_input_tokens"],
+            30
+        );
     }
 }
