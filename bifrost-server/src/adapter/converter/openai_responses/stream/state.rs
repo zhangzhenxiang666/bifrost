@@ -62,6 +62,7 @@ pub struct ChatToResponsesStreamState {
     text_buffer: String,
     reasoning_buffer: String,
     input_tokens: u32,
+    cached_tokens: u32,
     output_tokens: u32,
     reasoning_tokens: u32,
     tool_call_states: std::collections::HashMap<u64, ToolCallState>,
@@ -96,6 +97,7 @@ impl ChatToResponsesStreamState {
             text_buffer: String::new(),
             reasoning_buffer: String::new(),
             input_tokens: 0,
+            cached_tokens: 0,
             output_tokens: 0,
             reasoning_tokens: 0,
             item_counter: 0,
@@ -116,6 +118,7 @@ impl ChatToResponsesStreamState {
         self.text_buffer.clear();
         self.reasoning_buffer.clear();
         self.input_tokens = 0;
+        self.cached_tokens = 0;
         self.output_tokens = 0;
         self.reasoning_tokens = 0;
         self.tool_call_states = std::collections::HashMap::new();
@@ -313,12 +316,23 @@ impl ChatToResponsesStreamState {
         self.output_tokens
     }
 
+    pub fn cached_tokens(&self) -> u32 {
+        self.cached_tokens
+    }
+
     pub fn reasoning_tokens(&self) -> u32 {
         self.reasoning_tokens
     }
 
-    pub fn set_usage(&mut self, input_tokens: u32, output_tokens: u32, reasoning_tokens: u32) {
+    pub fn set_usage(
+        &mut self,
+        input_tokens: u32,
+        cached_tokens: u32,
+        output_tokens: u32,
+        reasoning_tokens: u32,
+    ) {
         self.input_tokens = input_tokens;
+        self.cached_tokens = cached_tokens;
         self.output_tokens = output_tokens;
         self.reasoning_tokens = reasoning_tokens;
     }

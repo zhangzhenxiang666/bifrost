@@ -93,6 +93,7 @@ pub fn extract_openai_usage(response: &serde_json::Value) -> Option<(u32, u32, O
     let cached = usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .filter(|&v| v > 0);
@@ -198,6 +199,27 @@ mod tests {
         });
 
         assert_eq!(extract_openai_usage(&response), Some((100, 25, Some(40))));
+    }
+
+    #[test]
+    fn openai_usage_extracts_top_level_prompt_cache_hit_tokens() {
+        let response = json!({
+            "usage": {
+                "prompt_tokens": 5199,
+                "completion_tokens": 41,
+                "total_tokens": 5240,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 19
+                },
+                "prompt_cache_hit_tokens": 5120,
+                "prompt_cache_miss_tokens": 79
+            }
+        });
+
+        assert_eq!(
+            extract_openai_usage(&response),
+            Some((5199, 41, Some(5120)))
+        );
     }
 
     #[test]

@@ -378,6 +378,7 @@ fn try_extract_usage(
                 let cached = usage
                     .get("prompt_tokens_details")
                     .and_then(|d| d.get("cached_tokens"))
+                    .or_else(|| usage.get("prompt_cache_hit_tokens"))
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
                     .filter(|&v| v > 0);

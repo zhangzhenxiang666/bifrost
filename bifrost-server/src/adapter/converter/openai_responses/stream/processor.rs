@@ -246,6 +246,7 @@ impl ChatToResponsesStreamProcessor {
             .and_then(|u| u.get("prompt_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
+        let cached_tokens = usage.and_then(cached_tokens_from_usage).unwrap_or(0) as u32;
         let output_tokens = usage
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|v| v.as_u64())
@@ -295,7 +296,7 @@ impl ChatToResponsesStreamProcessor {
             s.set_first_chunk_meta(id.to_string(), model.to_string());
             s.set_created_sent();
             s.set_in_progress_sent();
-            s.set_usage(input_tokens, output_tokens, reasoning_tokens);
+            s.set_usage(input_tokens, cached_tokens, output_tokens, reasoning_tokens);
         }
 
         events.extend(self.generate_content_events_from_delta(delta, None, usage)?);
@@ -736,15 +737,17 @@ impl ChatToResponsesStreamProcessor {
         let created_at = self.state().created_at().unwrap_or(0);
 
         let input_tokens = self.state().input_tokens();
+        let cached_tokens = self.state().cached_tokens();
         let output_tokens = self.state().output_tokens();
         let reasoning_tokens = self.state().reasoning_tokens();
 
         // Update usage from final chunk if available
-        let (in_tokens, out_tokens, reason_tokens) = if let Some(u) = usage {
+        let (in_tokens, cached_tokens, out_tokens, reason_tokens) = if let Some(u) = usage {
             let input = u
                 .get("prompt_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(input_tokens as u64) as u32;
+            let cached = cached_tokens_from_usage(u).unwrap_or(cached_tokens as u64) as u32;
             let output = u
                 .get("completion_tokens")
                 .or_else(|| u.get("output_tokens"))
@@ -755,9 +758,9 @@ impl ChatToResponsesStreamProcessor {
                 .and_then(|d| d.get("reasoning_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(reasoning_tokens as u64) as u32;
-            (input, output, reasoning)
+            (input, cached, output, reasoning)
         } else {
-            (input_tokens, output_tokens, reasoning_tokens)
+            (input_tokens, cached_tokens, output_tokens, reasoning_tokens)
         };
 
         let total_tokens = in_tokens + out_tokens;
@@ -822,7 +825,7 @@ impl ChatToResponsesStreamProcessor {
         );
         response_obj["usage"] = json!({
             "input_tokens": in_tokens,
-            "input_tokens_details": { "cached_tokens": 0 },
+            "input_tokens_details": { "cached_tokens": cached_tokens },
             "output_tokens": out_tokens,
             "output_tokens_details": { "reasoning_tokens": reason_tokens },
             "total_tokens": total_tokens
@@ -843,6 +846,14 @@ impl ChatToResponsesStreamProcessor {
 
         Ok(StreamChunkTransform::new_multi(events))
     }
+}
+
+fn cached_tokens_from_usage(usage: &serde_json::Map<String, Value>) -> Option<u64> {
+    usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
+        .and_then(|v| v.as_u64())
 }
 
 #[cfg(test)]
@@ -873,5 +884,56 @@ mod tests {
         }
 
         assert_eq!(normalize_stream_events(output_events), expected_events);
+    }
+
+    #[test]
+    fn test_final_usage_preserves_cached_tokens() {
+        let processor = ChatToResponsesStreamProcessor::new();
+
+        let chunk1 = json!({
+            "id": "chatcmpl-cache",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hello" },
+                "finish_reason": null
+            }]
+        });
+        processor.chat_stream_to_responses_stream(chunk1).unwrap();
+
+        let chunk2 = json!({
+            "id": "chatcmpl-cache",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125,
+                "prompt_cache_hit_tokens": 40,
+                "prompt_cache_miss_tokens": 60,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 7
+                }
+            }
+        });
+
+        let result = processor.chat_stream_to_responses_stream(chunk2).unwrap();
+        let completed = result
+            .events
+            .iter()
+            .find(|(_, event)| event.as_deref() == Some("response.completed"))
+            .map(|(data, _)| data)
+            .expect("response.completed event");
+        let usage = &completed["response"]["usage"];
+
+        assert_eq!(usage["input_tokens"], 100);
+        assert_eq!(usage["input_tokens_details"]["cached_tokens"], 40);
+        assert_eq!(usage["output_tokens"], 25);
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 7);
+        assert_eq!(usage["total_tokens"], 125);
     }
 }

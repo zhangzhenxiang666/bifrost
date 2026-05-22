@@ -15,6 +15,8 @@ pub struct OpenAIToAnthropicStreamState {
     tool_call_blocks: Vec<usize>,
     /// Current active block index (usize::MAX = no active block)
     current_active_block_index: usize,
+    /// Input tokens sent in message_start usage.
+    input_tokens: u32,
     /// Flags to mark the start of message, thinking, and text blocks
     flags: u8,
 }
@@ -30,6 +32,7 @@ impl OpenAIToAnthropicStreamState {
             next_block_index: 0,
             tool_call_blocks: Vec::new(),
             current_active_block_index: usize::MAX,
+            input_tokens: 0,
             flags: 0,
         }
     }
@@ -41,12 +44,17 @@ impl OpenAIToAnthropicStreamState {
         self.flags = 0;
         self.tool_call_blocks.clear();
         self.current_active_block_index = usize::MAX;
+        self.input_tokens = 0;
     }
 
     // ── Getters ───────────────────────────────────────────────────────────────
 
     pub fn current_active_block_index(&self) -> usize {
         self.current_active_block_index
+    }
+
+    pub fn input_tokens(&self) -> u32 {
+        self.input_tokens
     }
 
     // ── Compound mutators (one UnsafeCell round-trip each) ────────────────────
@@ -65,6 +73,10 @@ impl OpenAIToAnthropicStreamState {
 
     pub fn set_message_started(&mut self) {
         self.flags |= MESSAGE_STARTED;
+    }
+
+    pub fn set_input_tokens(&mut self, input_tokens: u32) {
+        self.input_tokens = input_tokens;
     }
 
     /// Allocate and initialise a new thinking block in one operation.

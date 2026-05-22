@@ -128,12 +128,12 @@ impl OpenAIToAnthropicStreamProcessor {
         )
     }
 
-    fn make_message_delta(stop_reason: &str, output_tokens: u32) -> (Value, Option<String>) {
+    fn make_message_delta(stop_reason: &str, usage: Value) -> (Value, Option<String>) {
         (
             json!({
                 "type": "message_delta",
                 "delta": { "stop_reason": stop_reason, "stop_sequence": null },
-                "usage": { "output_tokens": output_tokens }
+                "usage": usage
             }),
             Some("message_delta".to_string()),
         )
@@ -193,11 +193,12 @@ impl OpenAIToAnthropicStreamProcessor {
         let output_tokens = usage
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|v| v.as_u64())
-            .unwrap_or(1) as u32;
+            .unwrap_or(0) as u32;
 
         let cached_tokens = usage
             .and_then(|u| u.get("prompt_tokens_details"))
             .and_then(|d| d.get("cached_tokens"))
+            .or_else(|| usage.and_then(|u| u.get("prompt_cache_hit_tokens")))
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .filter(|&v| v > 0);
@@ -240,6 +241,7 @@ impl OpenAIToAnthropicStreamProcessor {
             let s = self.state_mut();
             s.reset();
             s.set_message_started();
+            s.set_input_tokens(input_tokens);
         }
 
         events.extend(
@@ -401,18 +403,64 @@ impl OpenAIToAnthropicStreamProcessor {
             }
         };
 
-        let output_tokens = usage
-            .and_then(|u| u.get("completion_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as u32;
+        let include_input_tokens = self.state().input_tokens() == 0;
+        let message_delta_usage = transform_final_usage(usage, include_input_tokens);
 
-        events.push(Self::make_message_delta(stop_reason, output_tokens));
+        events.push(Self::make_message_delta(stop_reason, message_delta_usage));
         events.push(Self::make_message_stop());
 
         self.state_mut().reset();
 
         Ok(StreamChunkTransform::new_multi(events))
     }
+}
+
+fn transform_final_usage(
+    usage: Option<&serde_json::Map<String, Value>>,
+    include_input_tokens: bool,
+) -> Value {
+    let output_tokens = usage
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let prompt_tokens = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64());
+    let cached_tokens = usage
+        .and_then(|u| u.get("prompt_tokens_details"))
+        .and_then(|d| d.get("cached_tokens"))
+        .or_else(|| usage.and_then(|u| u.get("prompt_cache_hit_tokens")))
+        .and_then(|v| v.as_u64())
+        .filter(|&v| v > 0);
+
+    let mut result = json!({ "output_tokens": output_tokens });
+
+    if include_input_tokens
+        && let Some(prompt_tokens) = prompt_tokens
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert(
+            "input_tokens".into(),
+            Value::Number(
+                prompt_tokens
+                    .saturating_sub(cached_tokens.unwrap_or(0))
+                    .into(),
+            ),
+        );
+    }
+
+    if include_input_tokens
+        && let Some(cached_tokens) = cached_tokens
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert(
+            "cache_read_input_tokens".into(),
+            Value::Number(cached_tokens.into()),
+        );
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -624,7 +672,7 @@ mod tests {
         let events1 = result1.events;
 
         assert_eq!(events1[0].0["message"]["usage"]["input_tokens"], 0);
-        assert_eq!(events1[0].0["message"]["usage"]["output_tokens"], 1);
+        assert_eq!(events1[0].0["message"]["usage"]["output_tokens"], 0);
 
         let chunk2 = json!({
             "id": "chatcmpl-123",
@@ -637,7 +685,9 @@ mod tests {
             "usage": {
                 "prompt_tokens": 200,
                 "completion_tokens": 80,
-                "total_tokens": 280
+                "total_tokens": 280,
+                "prompt_cache_hit_tokens": 40,
+                "prompt_cache_miss_tokens": 160
             }
         });
 
@@ -646,7 +696,10 @@ mod tests {
 
         let message_delta = events2.iter().find(|e| e.0["type"] == "message_delta");
         assert!(message_delta.is_some());
-        assert_eq!(message_delta.unwrap().0["usage"]["output_tokens"], 80);
+        let usage = &message_delta.unwrap().0["usage"];
+        assert_eq!(usage["input_tokens"], 160);
+        assert_eq!(usage["cache_read_input_tokens"], 40);
+        assert_eq!(usage["output_tokens"], 80);
     }
 
     #[test]
@@ -667,7 +720,7 @@ mod tests {
         let events = result.events;
 
         assert_eq!(events[0].0["message"]["usage"]["input_tokens"], 0);
-        assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 1);
+        assert_eq!(events[0].0["message"]["usage"]["output_tokens"], 0);
     }
 
     #[test]

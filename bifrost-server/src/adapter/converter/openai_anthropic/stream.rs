@@ -517,4 +517,46 @@ mod tests {
         assert_eq!(event["usage"]["total_tokens"], 150);
         assert_eq!(event["usage"]["prompt_tokens_details"]["cached_tokens"], 20);
     }
+
+    #[test]
+    fn test_stream_usage_with_all_input_tokens_in_message_delta() {
+        let processor = AnthropicToOpenAIStreamProcessor::new();
+
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_all_usage_delta",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-3-5-sonnet",
+                "content": [],
+                "stop_reason": null,
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }
+        });
+        let _ = processor
+            .anthropic_to_openai_stream("message_start", start)
+            .unwrap();
+
+        let msg_delta = json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "input_tokens": 60,
+                "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 10,
+                "output_tokens": 50
+            }
+        });
+        let result = processor
+            .anthropic_to_openai_stream("message_delta", msg_delta)
+            .unwrap();
+        let events = result.into_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0].0;
+        assert_eq!(event["usage"]["prompt_tokens"], 90);
+        assert_eq!(event["usage"]["completion_tokens"], 50);
+        assert_eq!(event["usage"]["total_tokens"], 140);
+        assert_eq!(event["usage"]["prompt_tokens_details"]["cached_tokens"], 20);
+    }
 }

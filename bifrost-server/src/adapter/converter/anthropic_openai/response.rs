@@ -28,6 +28,7 @@ pub fn transform_usage_openai_to_anthropic(usage: Option<&Value>) -> Value {
     let cached_tokens = usage_obj
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
+        .or_else(|| usage_obj.get("prompt_cache_hit_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .filter(|&v| v > 0);
@@ -897,6 +898,21 @@ mod tests {
         assert_eq!(result["input_tokens"], 70);
         assert_eq!(result["output_tokens"], 50);
         assert_eq!(result["cache_read_input_tokens"], 30);
+    }
+
+    #[test]
+    fn test_usage_with_top_level_prompt_cache_hit_tokens() {
+        let input = json!({
+            "prompt_tokens": 5199,
+            "completion_tokens": 41,
+            "prompt_cache_hit_tokens": 5120,
+            "prompt_cache_miss_tokens": 79
+        });
+
+        let result = transform_usage_openai_to_anthropic(Some(&input));
+        assert_eq!(result["input_tokens"], 79);
+        assert_eq!(result["output_tokens"], 41);
+        assert_eq!(result["cache_read_input_tokens"], 5120);
     }
 
     #[test]

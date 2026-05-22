@@ -360,12 +360,20 @@ fn transform_usage_to_responses_format(usage: Option<Value>) -> Option<Value> {
             let mut result = serde_json::Map::new();
             if let Some(cached) = details.get("cached_tokens") {
                 result.insert("cached_tokens".to_string(), cached.clone());
+            } else if let Some(cached) = usage_obj.get("prompt_cache_hit_tokens") {
+                result.insert("cached_tokens".to_string(), cached.clone());
             } else {
                 result.insert("cached_tokens".to_string(), Value::Number(0.into()));
             }
             Value::Object(result)
         })
-        .unwrap_or_else(|| json!({ "cached_tokens": 0 }));
+        .unwrap_or_else(|| {
+            let cached_tokens = usage_obj
+                .get("prompt_cache_hit_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            json!({ "cached_tokens": cached_tokens })
+        });
 
     // Transform completion_tokens_details → output_tokens_details
     let output_tokens_details = usage_obj
@@ -949,6 +957,38 @@ mod tests {
         });
         let r = result(input);
         assert_eq!(r["usage"]["total_tokens"], 15, "computed total");
+
+        // Top-level provider-specific prompt cache hit fallback
+        let input = json!({
+            "id": "chatcmpl_u5",
+            "choices": [{
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "content": "Hi",
+                    "refusal": null,
+                    "role": "assistant"
+                }
+            }],
+            "created": 1712530587,
+            "model": "deepseek-v4-flash",
+            "object": "chat.completion",
+            "usage": {
+                "completion_tokens": 41,
+                "prompt_tokens": 5199,
+                "total_tokens": 5240,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 19
+                },
+                "prompt_cache_hit_tokens": 5120,
+                "prompt_cache_miss_tokens": 79
+            }
+        });
+        let r = result(input);
+        assert_eq!(r["usage"]["input_tokens"], 5199);
+        assert_eq!(r["usage"]["input_tokens_details"]["cached_tokens"], 5120);
+        assert_eq!(r["usage"]["output_tokens"], 41);
+        assert_eq!(r["usage"]["output_tokens_details"]["reasoning_tokens"], 19);
 
         // No usage field
         let input = json!({
