@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::routes::{RouteEndpoint, build_auth_headers, build_request_url};
 use bifrost_shared::types::{BodyTransformPolicy, PROTECTED_BODY_FIELDS};
-use bifrost_shared::usage::{record_stream_usage, record_usage};
+use bifrost_shared::usage::{extract_openai_usage, record_stream_usage, record_usage};
 use std::collections::HashSet;
 
 const DEPLOYMENT_OVERRIDE_HEADER: &str = "x-bifrost-deployment";
@@ -366,22 +366,9 @@ fn try_extract_usage(
 ) {
     match endpoint {
         Endpoint::OpenAI => {
-            if let Some(usage) = chunk.get("usage").and_then(|u| u.as_object()) {
-                *prompt_tokens = usage
-                    .get("prompt_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                *completion_tokens = usage
-                    .get("completion_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                let cached = usage
-                    .get("prompt_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .or_else(|| usage.get("prompt_cache_hit_tokens"))
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .filter(|&v| v > 0);
+            if let Some((prompt, completion, cached)) = extract_openai_usage(chunk) {
+                *prompt_tokens = prompt;
+                *completion_tokens = completion;
                 if cached.is_some() {
                     *cached_tokens = cached;
                 }

@@ -46,9 +46,9 @@ where
         let mut this = self.project();
 
         loop {
-            if let Some(pos) = this.buffer.find("\n\n") {
+            if let Some((pos, delimiter_len)) = next_event_delimiter(this.buffer) {
                 let event_text = this.buffer[..pos].to_string();
-                this.buffer.drain(..pos + 2);
+                this.buffer.drain(..pos + delimiter_len);
                 let event = parse_sse_event(&event_text);
                 if !event.data.is_empty() {
                     return Poll::Ready(Some(Ok(event)));
@@ -85,6 +85,15 @@ where
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+fn next_event_delimiter(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
+        (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
+        (Some(lf), _) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
     }
 }
 
@@ -173,6 +182,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_crlf_delimited_events() {
+        let stream = bytes_stream_from(vec!["data: first\r\n\r\ndata: second\r\n\r\n"]);
+        let mut sse = stream.into_sse_stream();
+        let e1 = sse.next().await.unwrap().unwrap();
+        assert_eq!(e1.data, "first");
+        let e2 = sse.next().await.unwrap().unwrap();
+        assert_eq!(e2.data, "second");
+    }
+
+    #[tokio::test]
     async fn test_multiline_data() {
         let stream = bytes_stream_from(vec!["data: line1\ndata: line2\n\n"]);
         let mut sse = stream.into_sse_stream();
@@ -203,6 +222,20 @@ mod tests {
         let mut sse = stream.into_sse_stream();
         let event = sse.next().await.unwrap().unwrap();
         assert_eq!(event.data, "trailing");
+    }
+
+    #[tokio::test]
+    async fn test_comment_lines_are_ignored() {
+        // SSE comments start with ":" and should be ignored.
+        // Some servers send ":\n\n" as a keepalive ping.
+        let stream = bytes_stream_from(vec![":\n:\n: keepalive\ndata: payload\n\n"]);
+        let mut sse = stream.into_sse_stream();
+        let event = sse.next().await.unwrap().unwrap();
+        assert_eq!(event.data, "payload");
+        // A keepalive-only comment event produces no output
+        let stream2 = bytes_stream_from(vec![":\n\n"]);
+        let mut sse2 = stream2.into_sse_stream();
+        assert!(sse2.next().await.is_none());
     }
 
     #[tokio::test]

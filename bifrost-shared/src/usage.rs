@@ -82,14 +82,43 @@ impl UsageRecord {
 
         fs::create_dir_all(dir)?;
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        writeln!(file, "{}", serde_json::to_string(self)?)
+        // Write the JSON line and newline as a single write_all call so that a crash
+        // between partial writes cannot produce a truncated line in the file.
+        let line = format!("{}\n", serde_json::to_string(self)?);
+        file.write_all(line.as_bytes())
     }
 }
 
 pub fn extract_openai_usage(response: &serde_json::Value) -> Option<(u32, u32, Option<u32>)> {
     let usage = response.get("usage")?.as_object()?;
-    let prompt = usage.get("prompt_tokens")?.as_u64().unwrap_or(0) as u32;
-    let completion = usage.get("completion_tokens")?.as_u64().unwrap_or(0) as u32;
+    Some(extract_openai_usage_fields(usage))
+}
+
+fn extract_openai_usage_fields(
+    usage: &serde_json::Map<String, serde_json::Value>,
+) -> (u32, u32, Option<u32>) {
+    let prompt = if usage.contains_key("prompt_tokens") {
+        usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    } else {
+        usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    } as u32;
+    let completion = if usage.contains_key("completion_tokens") {
+        usage
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    } else {
+        usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    } as u32;
     let cached = usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
@@ -97,7 +126,7 @@ pub fn extract_openai_usage(response: &serde_json::Value) -> Option<(u32, u32, O
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .filter(|&v| v > 0);
-    Some((prompt, completion, cached))
+    (prompt, completion, cached)
 }
 
 pub fn extract_anthropic_usage(response: &serde_json::Value) -> Option<(u32, u32, Option<u32>)> {
@@ -220,6 +249,48 @@ mod tests {
             extract_openai_usage(&response),
             Some((5199, 41, Some(5120)))
         );
+    }
+
+    #[test]
+    fn openai_usage_prefers_standard_tokens_over_zero_aliases() {
+        let response = json!({
+            "usage": {
+                "prompt_tokens": 31422,
+                "completion_tokens": 107,
+                "total_tokens": 31522,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 0
+                },
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "input_tokens_details": null,
+                "claude_cache_creation_5_m_tokens": 0,
+                "claude_cache_creation_1_h_tokens": 0
+            }
+        });
+
+        assert_eq!(extract_openai_usage(&response), Some((31422, 107, None)));
+    }
+
+    #[test]
+    fn openai_usage_falls_back_to_response_token_aliases() {
+        let response = json!({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "total_tokens": 125
+            }
+        });
+
+        assert_eq!(extract_openai_usage(&response), Some((100, 25, None)));
     }
 
     #[test]

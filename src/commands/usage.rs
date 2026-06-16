@@ -193,7 +193,11 @@ fn read_records_for_range(from: &NaiveDate, to: &NaiveDate) -> Result<Vec<UsageR
             let file = File::open(&path)?;
             let reader = BufReader::new(file);
             for line in reader.lines() {
-                if let Ok(record) = serde_json::from_str::<UsageRecord>(&line?) {
+                let line_str = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                if let Ok(record) = serde_json::from_str::<UsageRecord>(&line_str) {
                     all_records.push(UsageRecordWithDate {
                         date: date_str.clone(),
                         record,

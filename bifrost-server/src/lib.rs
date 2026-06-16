@@ -26,6 +26,7 @@ use crate::routes::{
 use crate::state::AppState;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
@@ -77,7 +78,10 @@ async fn server(config: Config) -> anyhow::Result<()> {
         .route("/status", axum::routing::get(status))
         .merge(llm_router);
 
-    let app = main_router.with_state(state).layer(cors);
+    let app = main_router
+        .with_state(state)
+        .layer(cors)
+        .layer(DefaultBodyLimit::disable());
 
     // Bind and listen
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
